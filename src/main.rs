@@ -1,6 +1,7 @@
 use chess::Board;
 use chess::ChessMove;
 use chess::Color;
+use chess::Game;
 use chess::MoveGen;
 use chess::EMPTY;
 
@@ -21,7 +22,13 @@ use egui::Shape;
 use egui::Style;
 use egui::Ui;
 use egui::Vec2;
+use std::sync::mpsc::TryRecvError;
+use std::thread;
 use stockwish::StockWish;
+use timer::Guard;
+use timer::Timer;
+// Thread communication
+use std::sync::mpsc::{channel, Receiver, Sender};
 
 mod stockwish;
 
@@ -42,8 +49,8 @@ enum PromotionChoice {
 }
 
 struct MyApp {
-    // The all-important board state
-    board: Board,
+    // The game itself
+    game: Game,
     // UI
     board_image: egui_extras::RetainedImage,
     king_black: egui_extras::RetainedImage,
@@ -65,8 +72,7 @@ struct MyApp {
     // Only used to store information while the user is choosing a promotion
     chosen_dest_square: Option<chess::Square>,
     // The all-important chess AI
-    chess_ai: stockwish::StockWish,
-    ai_color: Color,
+    ai_controller: AIController,
 }
 
 impl MyApp {
@@ -93,23 +99,17 @@ impl MyApp {
     }
 
     fn click_square(&mut self, square: Square, promotion: PromotionChoice) {
-        println!("Clicking {} with {:?}", square, promotion);
         if let Some(chosen_piece) = self.chosen_piece {
             // Clicked a square with a chosen piece. This is an attempted move
-            self.attempt_move(chosen_piece, square, promotion);
+            self.attempt_human_move(chosen_piece, square, promotion);
             self.chosen_piece = None;
         } else {
             // Clicked a square with no piece chosen. This chooses the piece
             self.chosen_piece = Some(square);
         }
-        // If it is the AI's turn, take an action
-        if self.board.side_to_move() == self.ai_color {
-            self.let_ai_move();
-        }
     }
 
-    // TODO: Allow promotion
-    fn attempt_move(
+    fn attempt_human_move(
         &mut self,
         src_square: Square,
         dest_square: Square,
@@ -122,19 +122,12 @@ impl MyApp {
         self.take_move(chess_move);
     }
 
-    fn let_ai_move(&mut self) {
-        if let Some(ai_move) = self.chess_ai.best_next_move(&self.board) {
-            self.take_move(ai_move);
-        } else {
-            println!("AI is checkmate! You win!")
-        }
-    }
-
     fn take_move(&mut self, chess_move: ChessMove) {
-        if self.board.legal(chess_move) {
-            let mut tmp_board = self.board;
-            self.board.make_move(chess_move, &mut tmp_board);
-            self.board = tmp_board;
+        self.game.make_move(chess_move);
+        // Check if game is over (checkmate)
+        if let Some(result) = self.game.result() {
+            println!("Game is over: {:?}", result);
+            self.ai_controller.disable();
         }
     }
 }
@@ -165,7 +158,7 @@ macro_rules! svg_image_piece {
 impl Default for MyApp {
     fn default() -> Self {
         Self {
-            board: Board::default(),
+            game: Game::new(),
             board_image: svg_image_board!("chessboard"),
             king_black: svg_image_piece!("king_black"),
             king_white: svg_image_piece!("king_white"),
@@ -182,8 +175,7 @@ impl Default for MyApp {
             promotion_choice: PromotionChoice::NotNeeded,
             chosen_piece: None,
             chosen_dest_square: None,
-            chess_ai: StockWish::default(),
-            ai_color: Color::Black,
+            ai_controller: AIController::default(),
         }
     }
 }
@@ -217,7 +209,9 @@ fn attempting_promotion(board: &Board, src_square: Square, dest_square: Square) 
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        ctx.request_repaint();
         let mut square_clicked: Option<Square> = None;
+        let board = self.game.current_position();
 
         egui::Area::new("pieces")
             .default_pos(egui::pos2(0.0, 0.0))
@@ -242,7 +236,7 @@ impl eframe::App for MyApp {
                 // Paint pieces on the board
                 for piece in chess::ALL_PIECES {
                     for color in chess::ALL_COLORS {
-                        let pieces = self.board.color_combined(color) & self.board.pieces(piece);
+                        let pieces = board.color_combined(color) & board.pieces(piece);
                         for square in pieces {
                             let piece_image = egui::Image::new(
                                 self.fetch_piece_image(piece, color).texture_id(ctx),
@@ -255,7 +249,7 @@ impl eframe::App for MyApp {
 
                 // Paint possible moves
                 if let Some(chosen_piece) = self.chosen_piece {
-                    for legal_move in MoveGen::new_legal(&self.board) {
+                    for legal_move in MoveGen::new_legal(&board) {
                         if legal_move.get_source() == chosen_piece {
                             let shape = Shape::circle_filled(
                                 square_to_pos(legal_move.get_dest(), board_size),
@@ -312,18 +306,102 @@ impl eframe::App for MyApp {
 
         // Handle mouse clicks
         if let Some(dest_sq) = square_clicked {
+            // User has clicked a square
             // Choose Promotion if a pawn is reaching the end
             if self.chosen_piece.is_some()
-                && attempting_promotion(&self.board, self.chosen_piece.unwrap(), dest_sq)
+                && attempting_promotion(&board, self.chosen_piece.unwrap(), dest_sq)
                 && self.promotion_choice == PromotionChoice::NotNeeded
             {
-                println!("HERE");
                 self.chosen_dest_square = Some(dest_sq);
                 self.promotion_choice = PromotionChoice::Pending;
-            } else {
+            } else if !self.ai_controller.waiting_for_ai() {
                 self.click_square(dest_sq, self.promotion_choice);
                 self.promotion_choice = PromotionChoice::NotNeeded;
             }
+        } else {
+            // User has not clicked a square. If current player is AI-controlled, make a move.
+            if self.ai_controller.controls(self.game.side_to_move()) {
+                // This will get called repeatedly, but only one move will be made.
+                self.ai_controller.schedule_move(&self.game);
+                // Poll for the AI to finish
+                if let Some(chess_move) = self.ai_controller.poll_for_move() {
+                    self.take_move(chess_move);
+                }
+            }
         }
+    }
+}
+
+pub struct AIController {
+    chess_ai_white: Option<stockwish::StockWish>,
+    chess_ai_black: Option<stockwish::StockWish>,
+    receiver: Option<Receiver<Option<ChessMove>>>,
+}
+
+impl Default for AIController {
+    fn default() -> Self {
+        Self {
+            chess_ai_white: None,
+            chess_ai_black: Some(stockwish::StockWish::default()),
+            receiver: None,
+        }
+    }
+}
+
+impl AIController {
+    pub fn disable(&mut self) {
+        self.chess_ai_black = None;
+        self.chess_ai_white = None;
+    }
+
+    pub fn waiting_for_ai(&self) -> bool {
+        self.receiver.is_some()
+    }
+
+    pub fn controls(&self, c: chess::Color) -> bool {
+        match c {
+            chess::Color::Black => self.chess_ai_black.is_some(),
+            chess::Color::White => self.chess_ai_white.is_some(),
+        }
+    }
+
+    pub fn schedule_move(&mut self, game: &Game) {
+        // Schedules a move after a delay. This is idempotent, meaning that calling this recurringly does not result in several moves.
+        if self.receiver.is_none() {
+            let (tx, rx) = channel::<Option<ChessMove>>();
+            self.receiver = Some(rx);
+            let ai = match game.side_to_move() {
+                chess::Color::Black => self.chess_ai_black.clone(),
+                chess::Color::White => self.chess_ai_white.clone(),
+            };
+            let game = game.clone();
+            assert!(ai.is_some());
+            thread::spawn(move || {
+                let next_move = ai.clone().unwrap().best_next_move(game.clone());
+                tx.send(next_move)
+                    .expect("Error transmitting next move from AI");
+            });
+        }
+    }
+
+    // TODO: How to distinguish between a null-result from the AI, and a null-result from the poll?
+    pub fn poll_for_move(&mut self) -> Option<chess::ChessMove> {
+        // If it is done, this is the AI's move.
+        if let Some(rx) = &self.receiver {
+            match rx.try_recv() {
+                Ok(chess_move) => {
+                    self.receiver = None;
+                    return chess_move;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.receiver = None;
+                    return None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    return None;
+                }
+            }
+        }
+        None
     }
 }
