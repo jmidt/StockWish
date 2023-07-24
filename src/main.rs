@@ -3,34 +3,25 @@ use chess::ChessMove;
 use chess::Color;
 use chess::Game;
 use chess::MoveGen;
-use chess::EMPTY;
 
 use chess::Piece;
 use chess::Rank;
 use chess::Square;
 use eframe::egui;
-use egui::epaint::RectShape;
 use egui::pos2;
 use egui::Color32;
-use egui::Context;
 use egui::Frame;
 use egui::Pos2;
 use egui::Rect;
 use egui::Rounding;
 use egui::Sense;
 use egui::Shape;
-use egui::Style;
-use egui::Ui;
 use egui::Vec2;
-use std::sync::mpsc::TryRecvError;
 use std::thread;
-use stockwish::StockWish;
-use timer::Guard;
-use timer::Timer;
 // Thread communication
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{channel, Receiver};
 
-mod stockwish;
+mod stockwishbot;
 
 fn main() -> Result<(), eframe::Error> {
     env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
@@ -333,8 +324,8 @@ impl eframe::App for MyApp {
 }
 
 pub struct AIController {
-    chess_ai_white: Option<stockwish::StockWish>,
-    chess_ai_black: Option<stockwish::StockWish>,
+    chess_ai_white: Option<stockwishbot::StockWish>,
+    chess_ai_black: Option<stockwishbot::StockWish>,
     receiver: Option<Receiver<Option<ChessMove>>>,
 }
 
@@ -342,7 +333,7 @@ impl Default for AIController {
     fn default() -> Self {
         Self {
             chess_ai_white: None,
-            chess_ai_black: Some(stockwish::StockWish::default()),
+            chess_ai_black: Some(stockwishbot::StockWish::default()),
             receiver: None,
         }
     }
@@ -377,7 +368,10 @@ impl AIController {
             let game = game.clone();
             assert!(ai.is_some());
             thread::spawn(move || {
-                let next_move = ai.clone().unwrap().best_next_move(game.clone());
+                let next_move = ai
+                    .clone()
+                    .unwrap()
+                    .best_next_move_iterative_deepening(game.clone());
                 tx.send(next_move)
                     .expect("Error transmitting next move from AI");
             });

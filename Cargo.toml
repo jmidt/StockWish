@@ -8,6 +8,7 @@ chess = "3.2.0"
 eframe = "0.22.0"
 egui = "0.22.0"
 egui_extras = { version = "0.22.0", features = ["svg"] }
+hashlru = "0.11.0"
 rand = "0.8.5"
 time = "0.1.45"
 timer = "0.2.0"
