@@ -5,6 +5,8 @@ use chess::Board;
 use chess::ChessMove;
 use chess::Game;
 use chess::MoveGen;
+use chess::Square;
+use itertools::Itertools;
 
 use super::cache::CacheData;
 use super::cache::SWCache;
@@ -12,6 +14,7 @@ use super::cache::Score;
 use super::cache::TopTargets;
 use super::evaluation::quiescent_board_score;
 use super::evaluation::raw_board_score;
+use super::move_ordering::MoveOrder;
 use super::statistics::Statistics;
 
 #[derive(Default, Clone, Copy)]
@@ -50,16 +53,18 @@ impl StockWish {
     // Returns the best next move using iterative deepening.
     //
     pub fn best_next_move_iterative_deepening(&mut self, game: Game) -> Option<ChessMove> {
-        let iterative_deepening_depths = vec![4, 6, 8];
+        let iterative_deepening_depths = vec![1, 2, 3, 4, 5];
         let mut best_move = None;
+        println!("--------------------");
         for d in iterative_deepening_depths {
             best_move = self.best_next_move_at_depth(game.clone(), d);
+            println!(
+                "Depth: {} ::: Best move is from {} to {}",
+                d,
+                best_move.unwrap().get_source().to_string(),
+                best_move.unwrap().get_dest().to_string()
+            );
         }
-        println!(
-            "Best move is from {} to {}",
-            best_move.unwrap().get_source().to_string(),
-            best_move.unwrap().get_dest().to_string()
-        );
         best_move
     }
     //
@@ -104,7 +109,7 @@ fn negamax_alpha_beta_cache(
     _beta: i32,
     calibration: Calibration,
 ) -> Score {
-    let mut preferred_targets: Option<BitBoard> = None;
+    let mut preferred_targets: Option<TopTargets> = None;
     let mut alpha = _alpha;
     let mut beta = _beta;
     // Check cache
@@ -113,31 +118,45 @@ fn negamax_alpha_beta_cache(
             // If this move exists in the cache at a depth of at least remaining_depth, use this.
             // An exact score is amazing, then we use this directly. A lower bound or upper bound narrows the alpha-beta range.
             match cached_evaluation.score {
-                Score::LowerBound(lower_bound) => alpha = lower_bound,
-                Score::UpperBound(upper_bound) => beta = upper_bound,
+                Score::LowerBound(lower_bound) => {
+                    alpha = lower_bound;
+                }
+                Score::UpperBound(upper_bound) => {
+                    beta = upper_bound;
+                }
                 Score::Exact(exact) => return Score::Exact(exact),
             }
         } else {
             // If the depth is not enough, just use the cache for moveordering
-            preferred_targets = Some(cached_evaluation.targets);
+            preferred_targets = Some(cached_evaluation.targets.clone());
         }
     }
     // All valid moves
     let valid_moves = if let Some(t) = preferred_targets {
-        MoveOrder::new_from_preferred_targets(board, t)
+        MoveOrder::new_with_hint(board, t)
     } else {
         MoveOrder::new(board)
     };
     if remaining_depth == 0 || valid_moves.len() == 0 {
-        // This is a leaf or terminal node, so we evaluate. We don't cache these here, since quiescent_board_score does this for us.
         stats.increment();
-        Score::Exact(raw_board_score(board, calibration)) // TODO: Change to quiescent search
+        // This is a leaf or terminal node, so we evaluate. We don't cache these here, since quiescent_board_score does this for us.
+        // Score::Exact(raw_board_score(board, calibration)) // TODO: Change back to quiescent search
+        let score = Score::Exact(raw_board_score(board, calibration));
+        cache.insert(
+            board.get_hash(),
+            CacheData {
+                depth: remaining_depth,
+                score,
+                targets: TopTargets::new(0, chess::Color::White),
+            },
+        );
+        score
     } else {
         let mut best_value: i32 = match board.side_to_move() {
             chess::Color::White => i32::MIN,
             chess::Color::Black => i32::MAX,
         };
-        let mut top_targets = TopTargets::new(5, board.side_to_move());
+        let mut top_targets = TopTargets::new(10, board.side_to_move());
         for chess_move in valid_moves {
             let child_board = board.make_move_new(chess_move);
             let child_score: i32 = negamax_alpha_beta_cache(
@@ -163,7 +182,7 @@ fn negamax_alpha_beta_cache(
                             CacheData {
                                 depth: remaining_depth,
                                 score,
-                                targets: top_targets.targets(),
+                                targets: top_targets,
                             },
                         );
                         return score;
@@ -180,7 +199,7 @@ fn negamax_alpha_beta_cache(
                             CacheData {
                                 depth: remaining_depth,
                                 score,
-                                targets: top_targets.targets(),
+                                targets: top_targets,
                             },
                         );
                         return score;
@@ -194,89 +213,9 @@ fn negamax_alpha_beta_cache(
             CacheData {
                 depth: remaining_depth,
                 score,
-                targets: top_targets.targets(),
+                targets: top_targets,
             },
         );
         score
-    }
-}
-
-//
-// A better move order for iteration, hitting potentially high-value moves earlier
-//
-enum MoveOrderStage {
-    Hints,
-    Captures,
-    Remaining,
-}
-
-struct MoveOrder {
-    movegen: MoveGen,
-    board: Board,
-    stage: MoveOrderStage,
-}
-
-impl MoveOrder {
-    fn movegen_from_mask(board: &Board, mask: BitBoard) -> MoveGen {
-        let mut movegen = MoveGen::new_legal(board);
-        movegen.set_iterator_mask(mask);
-        movegen
-    }
-
-    pub fn new_from_preferred_targets(board: &Board, targets: BitBoard) -> Self {
-        // Construct a MoveOrder in the `Hints` stage.
-        Self {
-            movegen: Self::movegen_from_mask(board, targets),
-            board: *board,
-            stage: MoveOrderStage::Hints,
-        }
-    }
-
-    pub fn new(board: &Board) -> Self {
-        // Construct a MoveOrder in the `Captures` stage.
-        Self {
-            movegen: Self::movegen_from_mask(board, *board.color_combined(!board.side_to_move())),
-            board: *board,
-            stage: MoveOrderStage::Captures,
-        }
-    }
-}
-
-impl ExactSizeIterator for MoveOrder {
-    /// Give the exact length of this iterator
-    fn len(&self) -> usize {
-        self.movegen.len()
-    }
-}
-
-impl Iterator for MoveOrder {
-    type Item = ChessMove;
-
-    // TODO: Refactor this
-    fn next(&mut self) -> Option<Self::Item> {
-        let next = self.movegen.next();
-        // First, iterate through capturing moves.
-        match self.stage {
-            MoveOrderStage::Hints => {
-                if next.is_none() {
-                    self.movegen
-                        .set_iterator_mask(*self.board.color_combined(self.board.side_to_move()));
-                    self.stage = MoveOrderStage::Captures;
-                    self.movegen.next()
-                } else {
-                    next
-                }
-            }
-            MoveOrderStage::Captures => {
-                if next.is_none() {
-                    self.movegen.set_iterator_mask(!EMPTY);
-                    self.stage = MoveOrderStage::Remaining;
-                    self.movegen.next()
-                } else {
-                    next
-                }
-            }
-            MoveOrderStage::Remaining => next,
-        }
     }
 }

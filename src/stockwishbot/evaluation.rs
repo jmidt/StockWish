@@ -29,7 +29,7 @@ pub fn quiescent_board_score(board: &Board, cache: &mut SWCache, calibration: Ca
         CacheData {
             depth: 0,
             score,
-            targets: BitBoard::new(0),
+            targets: TopTargets::new(5, board.side_to_move()),
         },
     );
     score.into()
@@ -104,7 +104,7 @@ fn ongoing_raw_board_score(board: &Board, calibration: Calibration) -> i32 {
     let material = material_balance(board);
     // let mobility = mobility_score(board);
     let positional = singlet_positions(board);
-    return 12 * material + 2 * positional;
+    return 12 * material + 1 * positional;
 }
 
 fn material_balance(board: &Board) -> i32 {

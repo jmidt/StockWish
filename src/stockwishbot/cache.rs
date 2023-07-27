@@ -1,5 +1,6 @@
 use chess::{BitBoard, ChessMove, Color};
 use hashlru::Cache;
+use itertools::Itertools;
 
 #[derive(Copy, Clone)]
 pub enum Score {
@@ -23,7 +24,7 @@ impl From<Score> for i32 {
 pub struct CacheData {
     pub depth: i32,
     pub score: Score,
-    pub targets: BitBoard,
+    pub targets: TopTargets,
 }
 
 pub type SWCache = Cache<u64, CacheData>;
@@ -31,7 +32,7 @@ pub type SWCache = Cache<u64, CacheData>;
 // A collection which will retain only the N best moves, and provide a bitboard for use in move-ordering.
 #[derive(Clone)]
 pub struct TopTargets {
-    moves: Vec<(i32, ChessMove)>,
+    pub moves: Vec<(i32, ChessMove)>,
     maximizer: bool,
     max_size: usize,
 }
@@ -64,8 +65,21 @@ impl TopTargets {
         }
     }
 
-    pub fn just_the_moves(&self) -> impl Iterator<Item = ChessMove> + '_ {
-        self.moves.iter().map(|x| x.1)
+    pub fn ordered_moves(&self) -> Vec<ChessMove> {
+        // Used to efficiently put into a Vec and pop from
+        if self.maximizer {
+            self.moves
+                .iter()
+                .sorted_by(|a, b| a.0.cmp(&b.0))
+                .map(|x| x.1)
+                .collect_vec()
+        } else {
+            self.moves
+                .iter()
+                .sorted_by(|a, b| b.0.cmp(&a.0))
+                .map(|x| x.1)
+                .collect_vec()
+        }
     }
 
     // Get a bitboard describing the target squares in the array.
