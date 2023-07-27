@@ -14,11 +14,17 @@ use super::evaluation::quiescent_board_score;
 use super::evaluation::raw_board_score;
 use super::statistics::Statistics;
 
+#[derive(Default, Clone, Copy)]
+pub struct Calibration {
+    pub positional_weight: i32,
+}
+
 // TODO: Should not derive clone, since it now owns a lot of data.
 #[derive(Clone)]
 pub struct StockWish {
     depth: i32,
     cache: SWCache,
+    calibration: Calibration,
 }
 
 impl Default for StockWish {
@@ -26,11 +32,20 @@ impl Default for StockWish {
         Self {
             depth: 8,
             cache: SWCache::new(10_000_000),
+            calibration: Calibration::default(),
         }
     }
 }
 
 impl StockWish {
+    pub fn new(depth: i32, calibration: Calibration) -> Self {
+        Self {
+            depth,
+            cache: SWCache::new(10_000_000),
+            calibration,
+        }
+    }
+
     //
     // Returns the best next move using iterative deepening.
     //
@@ -40,6 +55,11 @@ impl StockWish {
         for d in iterative_deepening_depths {
             best_move = self.best_next_move_at_depth(game.clone(), d);
         }
+        println!(
+            "Best move is from {} to {}",
+            best_move.unwrap().get_source().to_string(),
+            best_move.unwrap().get_dest().to_string()
+        );
         best_move
     }
     //
@@ -62,19 +82,15 @@ impl StockWish {
                 &mut self.cache,
                 i32::MIN,
                 i32::MAX,
+                self.calibration,
             )
         };
         // Get the move that leads to the best scoring child board.
         let best_move = match game.side_to_move() {
-            chess::Color::Black => moves.min_by_key(|&m| -> i32 { algorithm(m).into() }),
             chess::Color::White => moves.max_by_key(|&m| -> i32 { algorithm(m).into() }),
+            chess::Color::Black => moves.min_by_key(|&m| -> i32 { algorithm(m).into() }),
         };
         stats.stop();
-        println!(
-            "Best move is from {} to {}",
-            best_move.unwrap().get_source().to_string(),
-            best_move.unwrap().get_dest().to_string()
-        );
         best_move
     }
 }
@@ -86,36 +102,37 @@ fn negamax_alpha_beta_cache(
     cache: &mut SWCache,
     _alpha: i32,
     _beta: i32,
+    calibration: Calibration,
 ) -> Score {
     let mut preferred_targets: Option<BitBoard> = None;
+    let mut alpha = _alpha;
+    let mut beta = _beta;
     // Check cache
     if let Some(cached_evaluation) = cache.get(&board.get_hash()) {
         if cached_evaluation.depth >= remaining_depth {
-            // If this move exists in the cache at a depth of at least remaining_depth, use this
-            return cached_evaluation.score;
+            // If this move exists in the cache at a depth of at least remaining_depth, use this.
+            // An exact score is amazing, then we use this directly. A lower bound or upper bound narrows the alpha-beta range.
+            match cached_evaluation.score {
+                Score::LowerBound(lower_bound) => alpha = lower_bound,
+                Score::UpperBound(upper_bound) => beta = upper_bound,
+                Score::Exact(exact) => return Score::Exact(exact),
+            }
         } else {
             // If the depth is not enough, just use the cache for moveordering
             preferred_targets = Some(cached_evaluation.targets);
         }
     }
-    // Evaluate using negamax strategy
-    if remaining_depth == 0 {
-        // This is a leaf node, so we evaluate. We don't cache these here, since quiescent_board_score does this for us.
-        stats.increment();
-        Score::Exact(quiescent_board_score(board, cache))
+    // All valid moves
+    let valid_moves = if let Some(t) = preferred_targets {
+        MoveOrder::new_from_preferred_targets(board, t)
     } else {
-        let mut alpha = _alpha;
-        let mut beta = _beta;
-        let valid_moves = if let Some(t) = preferred_targets {
-            MoveOrder::new_from_preferred_targets(board, t)
-        } else {
-            MoveOrder::new(board)
-        };
-        // There may not be any valid moves, such as in the case of a checkmate. It should not happen otherwise.
-        if valid_moves.len() == 0 {
-            stats.increment();
-            return Score::Exact(raw_board_score(board));
-        }
+        MoveOrder::new(board)
+    };
+    if remaining_depth == 0 || valid_moves.len() == 0 {
+        // This is a leaf or terminal node, so we evaluate. We don't cache these here, since quiescent_board_score does this for us.
+        stats.increment();
+        Score::Exact(raw_board_score(board, calibration)) // TODO: Change to quiescent search
+    } else {
         let mut best_value: i32 = match board.side_to_move() {
             chess::Color::White => i32::MIN,
             chess::Color::Black => i32::MAX,
@@ -130,6 +147,7 @@ fn negamax_alpha_beta_cache(
                 cache,
                 alpha,
                 beta,
+                calibration,
             )
             .into();
             top_targets.try_insert(child_score, &chess_move);
@@ -180,61 +198,6 @@ fn negamax_alpha_beta_cache(
             },
         );
         score
-    }
-}
-
-//
-// Return a score for a board state, using a recursive negamax strategy, with alpha-beta pruning.
-// To enable pruning, we must evaluate the board score for all nodes, not just leaf nodes. This
-// costs us a few board evaluations, but the pruning makes it worth it.
-//
-fn negamax_alpha_beta(
-    board: &Board,
-    stats: &mut Statistics,
-    remaining_depth: i32,
-    _alpha: i32,
-    _beta: i32,
-) -> Score {
-    if remaining_depth == 0 {
-        // This is a leaf node, so we evaluate
-        stats.increment();
-        Score::Exact(raw_board_score(board))
-    } else {
-        let mut alpha = _alpha;
-        let mut beta = _beta;
-        // Evaluate children and take either min or max, depending on whose turn it is
-        let child_boards = MoveOrder::new(board).map(|m| board.make_move_new(m));
-        // There may not be any valid moves, such as in the case of a checkmate. It should not happen otherwise.
-        if child_boards.len() == 0 {
-            return Score::Exact(raw_board_score(board));
-        }
-        let mut best_value: i32 = match board.side_to_move() {
-            chess::Color::White => i32::MIN,
-            chess::Color::Black => i32::MAX,
-        };
-        for child_board in child_boards {
-            let child_score: i32 =
-                negamax_alpha_beta(&child_board, stats, remaining_depth - 1, alpha, beta).into();
-            match board.side_to_move() {
-                // Maximizing player
-                chess::Color::White => {
-                    best_value = std::cmp::max(best_value, child_score);
-                    alpha = std::cmp::max(alpha, best_value);
-                    if beta < best_value {
-                        return Score::LowerBound(best_value);
-                    }
-                }
-                // Minimizing player
-                chess::Color::Black => {
-                    best_value = std::cmp::min(best_value, child_score);
-                    beta = std::cmp::min(beta, best_value);
-                    if best_value < alpha {
-                        return Score::UpperBound(best_value);
-                    }
-                }
-            }
-        }
-        Score::Exact(best_value)
     }
 }
 

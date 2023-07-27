@@ -29,6 +29,7 @@ pub struct CacheData {
 pub type SWCache = Cache<u64, CacheData>;
 
 // A collection which will retain only the N best moves, and provide a bitboard for use in move-ordering.
+#[derive(Clone)]
 pub struct TopTargets {
     moves: Vec<(i32, ChessMove)>,
     maximizer: bool,
@@ -61,6 +62,10 @@ impl TopTargets {
                 self.moves.swap_remove(idx);
             }
         }
+    }
+
+    pub fn just_the_moves(&self) -> impl Iterator<Item = ChessMove> + '_ {
+        self.moves.iter().map(|x| x.1)
     }
 
     // Get a bitboard describing the target squares in the array.
