@@ -159,16 +159,18 @@ fn negamax_alpha_beta_cache(
         let mut top_targets = TopTargets::new(10, board.side_to_move());
         for chess_move in valid_moves {
             let child_board = board.make_move_new(chess_move);
-            let child_score: i32 = negamax_alpha_beta_cache(
-                &child_board,
-                stats,
-                remaining_depth - 1,
-                cache,
-                alpha,
-                beta,
-                calibration,
-            )
-            .into();
+            let child_score: i32 = discount_checkmates(
+                negamax_alpha_beta_cache(
+                    &child_board,
+                    stats,
+                    remaining_depth - 1,
+                    cache,
+                    alpha,
+                    beta,
+                    calibration,
+                )
+                .into(),
+            );
             top_targets.try_insert(child_score, &chess_move);
             match board.side_to_move() {
                 // Maximizing player
@@ -216,6 +218,19 @@ fn negamax_alpha_beta_cache(
                 targets: top_targets,
             },
         );
+        score
+    }
+}
+
+fn discount_checkmates(score: i32) -> i32 {
+    // If score is very close to the CHECKMATE scores, discount by 1 (towards 0).
+    // This ensures shorter checkmate lines are preferred.
+    const THRESHOLD: i32 = 100;
+    if score < i32::MIN + THRESHOLD {
+        score + 1
+    } else if score > i32::MAX - THRESHOLD {
+        score - 1
+    } else {
         score
     }
 }
