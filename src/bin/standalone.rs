@@ -21,7 +21,7 @@ use std::thread;
 // Thread communication
 use std::sync::mpsc::{channel, Receiver};
 
-mod stockwishbot;
+use stockwish::stockwishbot::StockWish;
 
 fn main() -> Result<(), eframe::Error> {
     env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
@@ -29,7 +29,7 @@ fn main() -> Result<(), eframe::Error> {
         initial_window_size: Some(egui::vec2(800.0, 800.0)),
         ..Default::default()
     };
-    eframe::run_native("ChessBot", options, Box::new(|_cc| Box::<MyApp>::default()))
+    eframe::run_native("StockWish", options, Box::new(|_cc| Box::<MyApp>::default()))
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -127,7 +127,7 @@ macro_rules! svg_image {
     ($name:literal, $fit_to:expr) => {
         egui_extras::RetainedImage::from_svg_bytes_with_size(
             $name,
-            include_bytes!(concat!("../assets/", $name, ".svg")),
+            include_bytes!(concat!("../../assets/", $name, ".svg")),
             $fit_to,
         )
         .unwrap()
@@ -324,8 +324,8 @@ impl eframe::App for MyApp {
 }
 
 pub struct AIController {
-    chess_ai_white: Option<stockwishbot::StockWish>,
-    chess_ai_black: Option<stockwishbot::StockWish>,
+    chess_ai_white: Option<StockWish>,
+    chess_ai_black: Option<StockWish>,
     receiver: Option<Receiver<Option<ChessMove>>>,
 }
 
@@ -333,7 +333,7 @@ impl Default for AIController {
     fn default() -> Self {
         Self {
             chess_ai_white: None,
-            chess_ai_black: Some(stockwishbot::StockWish::default()),
+            chess_ai_black: Some(StockWish::default()),
             receiver: None,
         }
     }

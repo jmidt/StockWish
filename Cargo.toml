@@ -1,5 +1,5 @@
 [package]
-name = "chessbot"
+name = "stockwish"
 version = "0.1.0"
 edition = "2021"
 
@@ -13,7 +13,18 @@ itertools = "0.11.0"
 rand = "0.8.5"
 time = "0.1.45"
 timer = "0.2.0"
+licheszter = { git = "https://github.com/tontsa28/licheszter" }
+tokio = "1.29.1"
+anyhow = "1.0.72"
+tokio-stream = "0.1.14"
+futures-util = "0.3.28"
+licoricedev = "0.1.2"
+chrono = "0.4.26"
+serde_json = "1.0.104"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 env_logger = "0.10"
+
+[patch.crates-io]
+licoricedev = { path = "../licorice" }
 

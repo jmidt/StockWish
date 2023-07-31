@@ -1,12 +1,6 @@
-use chess::BitBoard;
-use chess::EMPTY;
-
 use chess::Board;
 use chess::ChessMove;
 use chess::Game;
-use chess::MoveGen;
-use chess::Square;
-use itertools::Itertools;
 
 use super::cache::CacheData;
 use super::cache::SWCache;
@@ -65,6 +59,16 @@ impl StockWish {
                 best_move.unwrap().get_dest().to_string()
             );
         }
+        if let Some(first_move) = best_move {
+            println!(
+                "Principal variation is {:?}",
+                self.get_principal_variation(game.current_position(), first_move)
+                    .iter()
+                    .map(|m| m.to_string())
+                    .reduce(|acc, m| acc + ", " + &m)
+                    .unwrap()
+            );
+        }
         best_move
     }
     //
@@ -97,6 +101,25 @@ impl StockWish {
         };
         stats.stop();
         best_move
+    }
+
+    // Reconstructs the principal variation from the cache
+    fn get_principal_variation(
+        &mut self,
+        current_board: Board,
+        first_move: ChessMove,
+    ) -> Vec<ChessMove> {
+        let mut pv = vec![first_move];
+        let mut board = current_board.make_move_new(first_move);
+        while let Some(cached) = self.cache.get(&board.get_hash()) {
+            if let Some(next_move) = cached.targets.ordered_moves().last() {
+                pv.push(*next_move);
+                board = board.make_move_new(*next_move);
+            } else {
+                break;
+            }
+        }
+        pv
     }
 }
 

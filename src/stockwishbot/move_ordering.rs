@@ -27,12 +27,6 @@ impl MoveOrder {
         movegen
     }
 
-    fn movegen_from_ignore_mask(board: &Board, mask: BitBoard) -> MoveGen {
-        let mut movegen = MoveGen::new_legal(board);
-        movegen.remove_mask(mask);
-        movegen
-    }
-
     pub fn new_with_hint(board: &Board, top_targets: TopTargets) -> Self {
         // Construct a MoveOrder in the `Hints` stage.
         let targets_bitboard = top_targets.targets();
