@@ -160,7 +160,7 @@ fn game_phase(board: &Board) -> GamePhase {
 }
 
 #[inline(always)]
-fn piece_value(p: Option<chess::Piece>) -> i32 {
+pub fn piece_value(p: Option<chess::Piece>) -> i32 {
     match p {
         Some(chess::Piece::Queen) => 900,
         Some(chess::Piece::Rook) => 500,

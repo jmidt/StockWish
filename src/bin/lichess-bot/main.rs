@@ -1,7 +1,7 @@
 #![allow(unused_imports)]
 #![allow(unused_macros)]
 
-use chess::{ChessMove, Color};
+use chess::{BoardStatus, ChessMove, Color};
 use chrono::{TimeZone, Utc};
 use futures_util::TryStreamExt;
 use licoricedev::client::{Lichess, LichessResult};
@@ -10,6 +10,7 @@ use licoricedev::models::board::{Challengee, Event};
 use licoricedev::models::game::Player;
 use licoricedev::models::user::{LightUser, PerfType};
 use serde_json::to_string_pretty;
+use std::time::Duration;
 use std::{env, thread, time};
 
 use stockwish::stockwishbot::StockWish;
@@ -18,95 +19,6 @@ use stockwish::stockwishbot::StockWish;
 async fn main() -> LichessResult<()> {
     // let lichess = Lichess::default();
     let lichess = Lichess::new(env::var("LICHESS_PAT_0").unwrap());
-
-    macro_rules! rstr {
-        ($lifunc:ident($($param:expr),*)) => {
-            println!("{}", lichess.$lifunc($($param,)*).await?);
-        };
-    }
-
-    macro_rules! rbyts {
-        ($lifunc:ident($($param:expr),*)) => {
-            let mut stream = lichess.$lifunc($($param,)*).await?;
-            while let Some(byte) = stream.try_next().await? {
-                print!("{:?}", byte);
-            }
-        };
-    }
-
-    macro_rules! fmod {
-        ($lifunc:ident($($param:expr),*)) => {
-            println!(
-                "{}",
-                to_string_pretty(&lichess.$lifunc($($param,)*).await?)?
-            );
-        };
-    }
-
-    macro_rules! smod {
-        ($lifunc:ident($($param:expr),*)) => {
-            let mut stream = lichess.$lifunc($($param,)*).await?;
-            while let Some(model) = stream.try_next().await? {
-                println!("{}", to_string_pretty(&model)?);
-            }
-        };
-    }
-
-    // // Account
-
-    // fmod!(get_my_profile());
-    let myself = lichess.get_my_profile().await?;
-
-    // println!("{}", lichess.get_my_email_address().await?);
-    // fmod!(get_my_preferences());
-    // println!("{}", lichess.get_my_kid_mode_status().await?);
-    // lichess.set_my_kid_mode_status(false).await?;
-
-    // // Users
-
-    // fmod!(get_user_status(&["minhjtran", "mutdpro", "mircica"]));
-    // fmod!(get_all_top_10());
-    // fmod!(get_one_leaderboard(5, PerfType::KingOfTheHill));
-    // fmod!(get_user_public("zhigalko_sergei"));
-    // fmod!(get_rating_history("icp1994"));
-    // smod!(get_my_puzzle_activity(Some(100)));
-    // fmod!(get_users_by_ids(&["minhjtran", "mutdpro", "mircica"]));
-    // smod!(get_members_of_a_team("melkumyan-fan-club"));
-    // fmod!(get_live_streamers());
-    // fmod!(get_crosstable("namiro", "vostanin", true));
-
-    // // Relations
-
-    // smod!(get_followings("mircica"));
-    // smod!(get_followers("mrhaggis"));
-
-    // // Games
-
-    let since = Utc
-        .ymd(2018, 12, 25)
-        .and_hms(0, 0, 0)
-        .timestamp_millis()
-        .to_string();
-    let until = Utc
-        .ymd(2019, 2, 17)
-        .and_hms(0, 0, 0)
-        .timestamp_millis()
-        .to_string();
-    let query_params = vec![
-        ("evals", "false"),
-        ("moves", "false"),
-        ("max", "100"),
-        ("since", &since),
-        ("until", &until),
-    ];
-    // rstr!(export_one_game_pgn("4kU9hKhl", Some(&query_params)));
-    // fmod!(export_one_game_json("4W3qyO9R", None));
-    // fmod!(export_one_game_json("eO8hev6Y", None));
-    // fmod!(export_one_game_json("kaMxZzMD", None));
-    // rstr!(export_ongoing_game_pgn("holdenhc", None));
-    // fmod!(export_ongoing_game_json("holdenhc", Some(&query_params)));
-    // smod!(export_all_games_json("mita_m", Some(&query_params)));
-
     let mut stream = lichess.stream_incoming_events().await.unwrap();
 
     while let Some(event) = stream.try_next().await? {
@@ -118,130 +30,15 @@ async fn main() -> LichessResult<()> {
             Event::GameFinish { game } => {
                 println!("Winner was {}!", game.winner);
             }
-            _ => {}
+            Event::Challenge { challenge } => {
+                // Accept all challenges
+                let _ = lichess.challenge_accept(&challenge.id).await;
+            }
+            _ => {
+                println!("Unknown event: {:?}", event);
+            }
         }
     }
-    // rbyts!(export_all_games_pgn("mita_m", Some(&query_params)));
-    // smod!(export_games_by_ids_json(
-    //     &["4kU9hKhl", "4W3qyO9R", "eO8hev6Y", "kaMxZzMD"],
-    //     Some(&query_params)
-    // ));
-    // smod!(stream_current_games(&["ruchess27", "rmnp",]));
-    // smod!(stream_current_games(
-    //     &"nikolai_69,rus5".split(',').collect::<Vec<&str>>()
-    // ));
-    // fmod!(get_ongoing_games(10));
-    // fmod!(get_current_tv_games());
-    // let pgn = std::fs::read_to_string("./examples/export_game.pgn")?;
-    // println!("{}", lichess.import_one_game(&pgn).await?);
-
-    // // Teams
-
-    // smod!(get_team_swiss_tournaments("chessnetwork", 50));
-    // fmod!(get_a_single_team("chessnetwork"));
-    // fmod!(get_popular_teams(None));
-    // fmod!(teams_of_a_player("chess-network"));
-    // fmod!(search_teams("network", None));
-    // smod!(get_team_arena_tournaments(
-    //     "igm-gata-kamskys-pawngrabbers-club",
-    //     15
-    // ));
-    // lichess
-    //     .join_a_team("heartlecc", Some("pretty please!"))
-    //     .await?;
-    // lichess.leave_a_team("lichess-swiss").await?;
-    // lichess
-    //     .kick_user_from_team("chessnetwork", "chess-network")
-    //     .await?;
-    // lichess
-    //     .message_all_members("chessnetwork", "hope this doesn't work!")
-    //     .await?;
-
-    // // Board
-
-    // smod!(stream_incoming_events());
-    // rbyts!(create_a_seek(120, 30, None));
-    // let form_params = [("color", "white")];
-    // rbyts!(create_a_seek(120, 30, Some(&form_params)));
-
-    // // Challenges
-
-    // let form_params = [
-    //     ("clock.limit", "180"),
-    //     ("clock.increment", "2"),
-    //     // ("days", "2"),
-    //     ("color", "black"),
-    //     (
-    //         "fen",
-    //         "rnbqkb1r/1p3ppp/p1p1pn2/3p4/P1PP4/2N2N2/1P2PPPP/R1BQKB1R w KQkq - 0 6",
-    //     ),
-    //     // ("acceptByToken", &env::var("LICHESS_PAT_1")?),
-    // ];
-    // fmod!(challenge_create("icp1994", Some(&form_params)));
-    // let challenge = lichess
-    //     .challenge_create("icp1994", Some(&form_params))
-    //     .await?;
-    // let cid = challenge.challenge.unwrap().id;
-    // println!("{}", &cid);
-    // let gid = challenge.game.unwrap().id;
-    // println!("{}", &gid);
-    // let user = Lichess::new(std::env::var("LICHESS_PAT_1").unwrap());
-    // thread::sleep(time::Duration::from_secs(30));
-    // user.challenge_accept(&cid).await?;
-    // user.challenge_decline(&cid).await?;
-    // user.challenge_cancel(&cid).await?;
-    // fmod!(challenge_stockfish(2, None));
-    // fmod!(challenge_open(None));
-    // lichess
-    //     .start_game_clocks(
-    //         &gid,
-    //         &env::var("LICHESS_PAT_0").unwrap(),
-    //         &env::var("LICHESS_PAT_1").unwrap(),
-    //     )
-    //     .await?;
-
-    // // Arena
-
-    // fmod!(arena_current());
-    // fmod!(arena_new(3u16, 2u8, 60u16, None));
-    // fmod!(arena_info("2yenmFSs", 5));
-    // rbyts!(games_by_arena_pgn("h06zb5YN", None));
-    // smod!(games_by_arena_json("h06zb5YN", None));
-    // smod!(results_by_arena("A2ojpt9J", 20));
-    // fmod!(teams_by_arena("0syvGIIT"));
-    // smod!(arenas_by_user("nojoke", 20));
-
-    // // Swiss
-
-    // fmod!(swiss_new("heartlecc", 180, 2, 4, None));
-    // rstr!(swiss_trf("3c3VDNcI"));
-    // rbyts!(games_by_swiss_pgn("3c3VDNcI", None));
-    // smod!(games_by_swiss_json("3c3VDNcI", None));
-    // smod!(results_by_swiss("mNimKV8p", 30));
-
-    // // Broadcast
-
-    // smod!(get_official_broadcasts(20));
-    // let broadcast = lichess
-    //     .create_broadcast("Licorice Test Broadcast", "For testing purpose", None)
-    //     .await?;
-    // fmod!(get_broadcast(&broadcast.id));
-    // fmod!(update_broadcast(
-    //     &broadcast.id,
-    //     "Name Changer",
-    //     "New Description",
-    //     None
-    // ));
-    // lichess
-    //     .push_to_broadcast(&broadcast.id, include_str!("export_game.pgn"))
-    //     .await?;
-
-    // // Misc
-
-    // fmod!(get_current_simuls());
-    // rstr!(study_chapter_pgn("h0yrcKtz", "5MZg70J3", None));
-    // rstr!(study_full_pgn("Of2YrR6A", None));
-
     Ok(())
 }
 
@@ -250,44 +47,41 @@ async fn play_game(id: String) {
     let mut stream = lichess.stream_bot_game_state(&id).await.unwrap();
     let mut myself: Option<chess::Color> = None;
     while let bs_result = stream.try_next().await {
-        println!("New board state just dropped! {:?}", bs_result);
         if let Ok(Some(board_state)) = bs_result {
             match board_state {
                 BoardState::GameFull(game_full) => {
-                    myself = if let Challengee::LightUser(_) = game_full.white {
-                        Some(Color::White)
-                    } else {
-                        Some(Color::Black)
-                    };
-                    if let Some(side) = myself {
-                        let game = chess_game_from_lichess_state(game_full.state);
-                        if side == game.side_to_move() {
-                            let mut stockwish = StockWish::default();
-                            let bot_move = stockwish.best_next_move_iterative_deepening(game);
-                            let _ = lichess
-                                .make_a_bot_move(&id, &bot_move.unwrap().to_string(), false)
-                                .await;
+                    if let Challengee::LightUser(white) = game_full.white {
+                        println!("White username is {}", white.username);
+                        if white.username == "stockwishbot" {
+                            myself = Some(Color::White);
                         }
                     }
+                    if let Challengee::LightUser(black) = game_full.black {
+                        println!("Black username is {}", black.username);
+                        if black.username == "stockwishbot" {
+                            myself = Some(Color::Black);
+                        }
+                    }
+                    if myself.is_none() {
+                        panic!("Cannot figure out who I am?!");
+                    }
+                    if let Some(winner) = &game_full.state.winner {
+                        println!("Game over. Winner is {}", winner);
+                        break;
+                    }
+                    make_bot_move_if_own_turn(myself, game_full.state, &lichess, &id).await;
                 }
                 BoardState::GameState(game_state) => {
-                    if let Some(side) = myself {
-                        let game = chess_game_from_lichess_state(game_state);
-                        if side == game.side_to_move() {
-                            let mut stockwish = StockWish::default();
-                            let bot_move = stockwish.best_next_move_iterative_deepening(game);
-                            let _ = lichess
-                                .make_a_bot_move(&id, &bot_move.unwrap().to_string(), false)
-                                .await;
-                        }
+                    if let Some(winner) = &game_state.winner {
+                        println!("Game over. Winner is {}", winner);
+                        break;
                     }
+                    make_bot_move_if_own_turn(myself, game_state, &lichess, &id).await;
                 }
                 _ => {}
             }
         }
     }
-
-    println!("Game over...")
 }
 
 fn chess_game_from_lichess_state(game_state: GameState) -> chess::Game {
@@ -296,4 +90,25 @@ fn chess_game_from_lichess_state(game_state: GameState) -> chess::Game {
         game.make_move(move_text.parse::<ChessMove>().unwrap());
     }
     game
+}
+
+async fn make_bot_move_if_own_turn(
+    myself: Option<chess::Color>,
+    game_state: GameState,
+    lichess: &Lichess,
+    id: &str,
+) {
+    const MINIMUM_MOVE_TIME: Duration = Duration::from_millis(500);
+    if let Some(side) = myself {
+        let game = chess_game_from_lichess_state(game_state);
+        if side == game.side_to_move() {
+            let mut stockwish = StockWish::default();
+            let start = time::Instant::now();
+            let bot_move = stockwish.best_next_move_iterative_deepening(game);
+            tokio::time::sleep_until((start + MINIMUM_MOVE_TIME).into()).await;
+            let _ = lichess
+                .make_a_bot_move(id, &bot_move.unwrap().to_string(), false)
+                .await;
+        }
+    }
 }

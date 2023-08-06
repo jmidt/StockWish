@@ -59,16 +59,17 @@ impl StockWish {
                 best_move.unwrap().get_dest().to_string()
             );
         }
-        if let Some(first_move) = best_move {
-            println!(
-                "Principal variation is {:?}",
-                self.get_principal_variation(game.current_position(), first_move)
-                    .iter()
-                    .map(|m| m.to_string())
-                    .reduce(|acc, m| acc + ", " + &m)
-                    .unwrap()
-            );
-        }
+        // TODO: Principal variation ecounters loops in the endgame??
+        // if let Some(first_move) = best_move {
+        //     println!(
+        //         "Principal variation is {:?}",
+        //         self.get_principal_variation(game.current_position(), first_move)
+        //             .iter()
+        //             .map(|m| m.to_string())
+        //             .reduce(|acc, m| acc + ", " + &m)
+        //             .unwrap()
+        //     );
+        // }
         best_move
     }
     //
