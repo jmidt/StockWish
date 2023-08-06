@@ -1,3 +1,5 @@
+use std::ptr::null;
+
 use chess::Board;
 use chess::ChessMove;
 use chess::Game;
@@ -47,7 +49,7 @@ impl StockWish {
     // Returns the best next move using iterative deepening.
     //
     pub fn best_next_move_iterative_deepening(&mut self, game: Game) -> Option<ChessMove> {
-        let iterative_deepening_depths = vec![1, 2, 3, 4, 5];
+        let iterative_deepening_depths = vec![1, 2, 3, 4, 5, 6];
         let mut best_move = None;
         println!("--------------------");
         for d in iterative_deepening_depths {
@@ -161,7 +163,7 @@ fn negamax_alpha_beta_cache(
     } else {
         MoveOrder::new(board)
     };
-    if remaining_depth == 0 || valid_moves.len() == 0 {
+    if remaining_depth <= 0 || valid_moves.len() == 0 {
         stats.increment();
         // This is a leaf or terminal node, so we evaluate. We don't cache these here, since quiescent_board_score does this for us.
         // Score::Exact(raw_board_score(board, calibration)) // TODO: Change back to quiescent search
@@ -176,6 +178,25 @@ fn negamax_alpha_beta_cache(
         );
         score
     } else {
+        // Not a leaf node. We must evaluate further down.
+        // First up: Null-move pruning (TODO: After proper negamax)
+        // if let Some(null_moved_board) = null_move_pruning(board) {
+        //     match negamax_alpha_beta_cache(
+        //         &null_moved_board,
+        //         stats,
+        //         remaining_depth - 2,
+        //         cache,
+        //         alpha,
+        //         beta,
+        //         calibration,
+        //     ) {
+        //         // For exact scores, we are still on the right track, so we continue with the proper evaluation
+        //         Score::Exact(_) => {}
+        //         // For everything other than exact scores (meaning there was a cutoff), we return.
+        //         x => return x,
+        //     }
+        // }
+
         let mut best_value: i32 = match board.side_to_move() {
             chess::Color::White => i32::MIN,
             chess::Color::Black => i32::MAX,
@@ -257,4 +278,11 @@ fn discount_checkmates(score: i32) -> i32 {
     } else {
         score
     }
+}
+
+fn null_move_pruning(board: &Board) -> Option<Board> {
+    // Will return a null-moved board if it is possible to perform a null-move
+    // and our heuristics allow it
+    board.null_move()
+    // Currently, we just do it all the time, but it should not be done in the endgame.
 }
