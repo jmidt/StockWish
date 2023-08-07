@@ -3,6 +3,7 @@ use std::ptr::null;
 use chess::Board;
 use chess::ChessMove;
 use chess::Game;
+use chess::MoveGen;
 
 use super::cache::CacheData;
 use super::cache::SWCache;
@@ -10,7 +11,7 @@ use super::cache::Score;
 use super::cache::TopTargets;
 use super::evaluation::quiescent_board_score;
 use super::evaluation::raw_board_score;
-use super::move_ordering::MoveOrder;
+use super::move_ordering::generate_move_order;
 use super::statistics::Statistics;
 
 #[derive(Default, Clone, Copy)]
@@ -61,7 +62,7 @@ impl StockWish {
                 best_move.unwrap().get_dest().to_string()
             );
         }
-        // TODO: Principal variation ecounters loops in the endgame??
+        // TODO: Principal variation encounters loops in the endgame??
         // if let Some(first_move) = best_move {
         //     println!(
         //         "Principal variation is {:?}",
@@ -74,20 +75,14 @@ impl StockWish {
         // }
         best_move
     }
-    //
-    // Returns the best next move. A return-value of None means the current player is checkmate.
-    //
-    pub fn best_next_move(&mut self, game: Game) -> Option<ChessMove> {
-        self.best_next_move_at_depth(game, self.depth)
-    }
 
     fn best_next_move_at_depth(&mut self, game: Game, depth: i32) -> Option<ChessMove> {
         let board = game.current_position();
-        let moves = MoveOrder::new(&board);
+        let moves = MoveGen::new_legal(&board);
         let mut stats = Statistics::new();
 
         let mut algorithm = |m: ChessMove| {
-            negamax_alpha_beta_cache(
+            -negamax_alpha_beta_cache(
                 &board.make_move_new(m),
                 &mut stats,
                 depth,
@@ -97,11 +92,10 @@ impl StockWish {
                 self.calibration,
             )
         };
-        // Get the move that leads to the best scoring child board.
-        let best_move = match game.side_to_move() {
-            chess::Color::White => moves.max_by_key(|&m| -> i32 { algorithm(m).into() }),
-            chess::Color::Black => moves.min_by_key(|&m| -> i32 { algorithm(m).into() }),
-        };
+        // Get the move that leads to the worst scoring child board for the opponent.
+        let best_move = moves
+            .into_iter()
+            .max_by_key(|&m| -> i32 { algorithm(m).into() });
         stats.stop();
         best_move
     }
@@ -152,106 +146,75 @@ fn negamax_alpha_beta_cache(
                 }
                 Score::Exact(exact) => return Score::Exact(exact),
             }
-        } else {
-            // If the depth is not enough, just use the cache for moveordering
+        } else if cached_evaluation.depth > 0 {
+            // If the depth is not enough, just use the cache for moveordering.
+            // Only if depth is not zero, however. In this case, the moveordering is not helpful.
             preferred_targets = Some(cached_evaluation.targets.clone());
         }
     }
-    // All valid moves
-    let valid_moves = if let Some(t) = preferred_targets {
-        MoveOrder::new_with_hint(board, t)
-    } else {
-        MoveOrder::new(board)
-    };
-    if remaining_depth <= 0 || valid_moves.len() == 0 {
+    // All valid moves in a hopefully good ordering
+    let valid_moves = generate_move_order(board, preferred_targets);
+
+    if remaining_depth <= 0 || valid_moves.is_empty() {
         stats.increment();
         // This is a leaf or terminal node, so we evaluate. We don't cache these here, since quiescent_board_score does this for us.
         // Score::Exact(raw_board_score(board, calibration)) // TODO: Change back to quiescent search
-        let score = Score::Exact(raw_board_score(board, calibration));
-        cache.insert(
-            board.get_hash(),
-            CacheData {
-                depth: remaining_depth,
-                score,
-                targets: TopTargets::new(0, chess::Color::White),
-            },
-        );
-        score
+        Score::Exact(quiescent_board_score(
+            board,
+            cache,
+            alpha,
+            beta,
+            calibration,
+        ))
     } else {
         // Not a leaf node. We must evaluate further down.
-        // First up: Null-move pruning (TODO: After proper negamax)
-        // if let Some(null_moved_board) = null_move_pruning(board) {
-        //     match negamax_alpha_beta_cache(
-        //         &null_moved_board,
-        //         stats,
-        //         remaining_depth - 2,
-        //         cache,
-        //         alpha,
-        //         beta,
-        //         calibration,
-        //     ) {
-        //         // For exact scores, we are still on the right track, so we continue with the proper evaluation
-        //         Score::Exact(_) => {}
-        //         // For everything other than exact scores (meaning there was a cutoff), we return.
-        //         x => return x,
-        //     }
-        // }
-
-        let mut best_value: i32 = match board.side_to_move() {
-            chess::Color::White => i32::MIN,
-            chess::Color::Black => i32::MAX,
-        };
-        let mut top_targets = TopTargets::new(10, board.side_to_move());
-        for chess_move in valid_moves {
-            let child_board = board.make_move_new(chess_move);
-            let child_score: i32 = discount_checkmates(
-                negamax_alpha_beta_cache(
-                    &child_board,
-                    stats,
-                    remaining_depth - 1,
-                    cache,
-                    alpha,
-                    beta,
-                    calibration,
-                )
-                .into(),
+        // First up: Null-move pruning
+        if let Some(null_moved_board) = null_move_pruning(board, remaining_depth) {
+            // We do the null-check with a fresh cache, to not pollute the main cache.
+            let mut null_move_cache = SWCache::new(1_000_000);
+            let score = -negamax_alpha_beta_cache(
+                &null_moved_board,
+                stats,
+                remaining_depth - 3,
+                &mut null_move_cache,
+                -beta,
+                -beta + 1,
+                calibration,
             );
-            top_targets.try_insert(child_score, &chess_move);
-            match board.side_to_move() {
-                // Maximizing player
-                chess::Color::White => {
-                    best_value = std::cmp::max(best_value, child_score);
-                    alpha = std::cmp::max(alpha, best_value);
-                    if beta < best_value {
-                        let score = Score::LowerBound(best_value);
-                        cache.insert(
-                            board.get_hash(),
-                            CacheData {
-                                depth: remaining_depth,
-                                score,
-                                targets: top_targets,
-                            },
-                        );
-                        return score;
-                    }
-                }
-                // Minimizing player
-                chess::Color::Black => {
-                    best_value = std::cmp::min(best_value, child_score);
-                    beta = std::cmp::min(beta, best_value);
-                    if best_value < alpha {
-                        let score = Score::UpperBound(best_value);
-                        cache.insert(
-                            board.get_hash(),
-                            CacheData {
-                                depth: remaining_depth,
-                                score,
-                                targets: top_targets,
-                            },
-                        );
-                        return score;
-                    }
-                }
+            if i32::from(score) >= beta {
+                return Score::LowerBound(score.into());
+            }
+        }
+
+        let mut best_value: i32 = i32::MIN;
+        let mut top_targets = TopTargets::new(6);
+        for chess_move in valid_moves {
+            let child_score: Score = -negamax_alpha_beta_cache(
+                &board.make_move_new(chess_move),
+                stats,
+                remaining_depth - 1,
+                cache,
+                -beta,
+                -alpha,
+                calibration,
+            );
+            let child_score_discounted = discount_checkmates(child_score.into());
+            // Save if this is a good move
+            top_targets.try_insert(child_score_discounted, &chess_move);
+
+            best_value = std::cmp::max(best_value, child_score_discounted);
+            alpha = std::cmp::max(alpha, best_value);
+            if best_value >= beta {
+                let score = Score::LowerBound(best_value);
+                cache.insert(
+                    board.get_hash(),
+                    CacheData {
+                        depth: remaining_depth,
+                        score,
+                        targets: top_targets,
+                    },
+                );
+                return score;
             }
         }
         let score = Score::Exact(best_value);
@@ -280,9 +243,12 @@ fn discount_checkmates(score: i32) -> i32 {
     }
 }
 
-fn null_move_pruning(board: &Board) -> Option<Board> {
+fn null_move_pruning(board: &Board, remaining_depth: i32) -> Option<Board> {
     // Will return a null-moved board if it is possible to perform a null-move
     // and our heuristics allow it
+    if remaining_depth < 3 {
+        return None;
+    }
     board.null_move()
     // Currently, we just do it all the time, but it should not be done in the endgame.
 }

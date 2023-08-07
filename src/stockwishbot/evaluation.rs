@@ -15,13 +15,20 @@ use super::cache::CacheData;
 use super::cache::SWCache;
 use super::cache::Score;
 use super::cache::TopTargets;
+use super::move_ordering::moves_toward_quiescence;
 use super::Calibration;
 
-pub fn quiescent_board_score(board: &Board, cache: &mut SWCache, calibration: Calibration) -> i32 {
+pub fn quiescent_board_score(
+    board: &Board,
+    cache: &mut SWCache,
+    alpha: i32,
+    beta: i32,
+    calibration: Calibration,
+) -> i32 {
     // Evaluate a board. We only actually evaluate quiescent board states, so we run through
     // a new game tree, with no max depth, only considering captures.
     // TODO: Currently using alpha-beta pruning, but I hear delta-pruning is good at this?
-    let score = quiescent_alpha_beta(board, cache, i32::MIN, i32::MAX, calibration);
+    let score = quiescent_alpha_beta(board, cache, alpha, beta, calibration);
     // TODO: We could potentially find some good targets, but it would only involve captures,
     // so probably not so useful for general tree search.
     cache.insert(
@@ -29,7 +36,7 @@ pub fn quiescent_board_score(board: &Board, cache: &mut SWCache, calibration: Ca
         CacheData {
             depth: 0,
             score,
-            targets: TopTargets::new(5, board.side_to_move()),
+            targets: TopTargets::new(0),
         },
     );
     score.into()
@@ -39,72 +46,66 @@ fn quiescent_alpha_beta(
     board: &Board,
     cache: &mut SWCache,
     _alpha: i32,
-    _beta: i32,
+    beta: i32,
     calibration: Calibration,
 ) -> Score {
-    let mut alpha = _alpha;
-    let mut beta = _beta;
-    // Evaluate captures and take either min or max, depending on whose turn it is
-    let mut captures = MoveGen::new_legal(board);
-    captures.set_iterator_mask(*board.color_combined(!board.side_to_move()));
-
-    let mut num_captures = 0;
-    let mut best_value: i32 = match board.side_to_move() {
-        chess::Color::White => i32::MIN,
-        chess::Color::Black => i32::MAX,
-    };
-    for capture in captures {
-        num_captures += 1;
-        let child_board = board.make_move_new(capture);
-        let child_score: i32 =
-            quiescent_alpha_beta(&child_board, cache, alpha, beta, calibration).into();
-        match board.side_to_move() {
-            // Maximizing player
-            chess::Color::White => {
-                best_value = std::cmp::max(best_value, child_score);
-                alpha = std::cmp::max(alpha, best_value);
-                if beta < best_value {
-                    return Score::LowerBound(best_value);
-                }
-            }
-            // Minimizing player
-            chess::Color::Black => {
-                best_value = std::cmp::min(best_value, child_score);
-                beta = std::cmp::min(beta, best_value);
-                if best_value < alpha {
-                    return Score::UpperBound(best_value);
-                }
-            }
-        }
+    // Check if current raw_board_score is enough to cause a beta-cutoff
+    let eval = raw_board_score(board, calibration);
+    if beta <= eval {
+        return Score::LowerBound(eval);
     }
-    // If there were no captures, we have hit a quiescent board state and we evaluate.
-    if num_captures == 0 {
-        return Score::Exact(raw_board_score(board, calibration));
+    // Possibly raise alpha
+    let mut alpha = std::cmp::max(_alpha, eval);
+
+    let captures = moves_toward_quiescence(board);
+    // If there are no captures, we have hit a quiescent board state and we evaluate.
+    if captures.is_empty() {
+        return Score::Exact(eval);
+    }
+    let mut best_value = alpha;
+    for capture in captures {
+        // TODO: If current eval + captured piece (+ some margin) is above alpha, quiesce further down.
+        // Otherwise set best_value = max(best_value, that-thing-above^^)
+
+        let child_score = -quiescent_alpha_beta(
+            &board.make_move_new(capture),
+            cache,
+            -beta,
+            -alpha,
+            calibration,
+        );
+        let child_score_numeric = i32::from(child_score);
+        best_value = std::cmp::max(best_value, child_score_numeric);
+        alpha = std::cmp::max(alpha, best_value);
+        if beta <= best_value {
+            return Score::LowerBound(best_value);
+        }
     }
     // If we get here, we HAD possible captures to do, and return the score for the optimal capture.
     Score::Exact(best_value)
 }
 
 pub fn raw_board_score(board: &Board, calibration: Calibration) -> i32 {
-    // Checkmate, Stalemate, etc.
+    // This function must return scores from the point-of-view of the player who's turn it is.
     match board.status() {
-        BoardStatus::Checkmate => {
-            // If it is black to move, they are checkmated, and vice versa
-            match board.side_to_move() {
-                chess::Color::White => i32::MIN,
-                chess::Color::Black => i32::MAX,
-            }
-        }
+        // If it is currently a checkmate, it is a very bad thing for the current player
+        BoardStatus::Checkmate => i32::MIN,
+        // A stalemate is evenly meh.
         BoardStatus::Stalemate => 0,
         _ => ongoing_raw_board_score(board, calibration),
     }
 }
 
 fn ongoing_raw_board_score(board: &Board, calibration: Calibration) -> i32 {
+    // This function must return scores from the point-of-view of the player who's turn it is.
     let material = material_balance(board);
     // let mobility = mobility_score(board);
     let positional = singlet_positions(board);
-    return 12 * material + 1 * positional;
+    let turn = match board.side_to_move() {
+        chess::Color::White => 1,
+        chess::Color::Black => -1,
+    };
+    return turn * (12 * material + 1 * positional);
 }
 
 fn material_balance(board: &Board) -> i32 {

@@ -1,104 +1,76 @@
-use chess::{BitBoard, Board, ChessMove, MoveGen};
+use chess::{BitBoard, Board, ChessMove, MoveGen, EMPTY};
+use itertools::Itertools;
 
 use super::cache::TopTargets;
 use super::evaluation::piece_value;
-
 //
 // A better move order for iteration, hitting potentially high-value moves earlier
 //
-enum MoveOrderStage {
-    Favored,
-    Remaining,
+
+// Note that intended behaviour is:
+// First criterion: Enum variant
+// Second Criterion: Inner value
+#[derive(Eq, PartialEq, PartialOrd, Ord)]
+enum MoveCategory {
+    NormalMove(i32),
+    Capture(i32),
+    Promotion(i32),
+    Cached(i32),
 }
 
-// TODO: Can be simplified, to just have an implied stage.
-pub struct MoveOrder {
-    favored: Vec<ChessMove>,
-    remaining_movegen: MoveGen,
-    board: Board,
-    stage: MoveOrderStage,
+fn mvv_lva(board: &Board, chess_move: &ChessMove) -> i32 {
+    // The tentative score of a capture, as value of victim minus value of attacker
+    let victim = board.piece_on(chess_move.get_dest());
+    let attacker = board.piece_on(chess_move.get_source());
+    piece_value(victim) - piece_value(attacker)
 }
 
-impl MoveOrder {
-    fn movegen_from_mask(board: &Board, mask: BitBoard) -> MoveGen {
-        let mut movegen = MoveGen::new_legal(board);
-        movegen.set_iterator_mask(mask);
-        movegen
-    }
-
-    fn mvv_lva(board: &Board, chess_move: &ChessMove) -> i32 {
-        // The tentative score of a capture, as value of victim minus value of attacker
-        let victim = board.piece_on(chess_move.get_dest());
-        let attacker = board.piece_on(chess_move.get_source());
-        piece_value(victim) - piece_value(attacker)
-    }
-
-    fn ordered_captures(board: &Board, blacklist: Option<&BitBoard>) -> Vec<ChessMove> {
-        // All captures in MVV-LVA ordering
-        let other_players_pieces = board.color_combined(!board.side_to_move());
-        let mut captures: Vec<ChessMove> = if let Some(b) = blacklist {
-            Self::movegen_from_mask(board, *other_players_pieces & !b).collect()
-        } else {
-            Self::movegen_from_mask(board, *other_players_pieces).collect()
-        };
-        captures.sort_by(|a, b| (Self::mvv_lva(board, a)).cmp(&Self::mvv_lva(board, b)));
-        captures
-    }
-
-    pub fn new_with_hint(board: &Board, top_targets: TopTargets) -> Self {
-        // Construct a MoveOrder in the `Hints` stage.
-        let targets_bitboard = top_targets.targets();
-        let other_players_pieces = board.color_combined(!board.side_to_move());
-        let mut favored = Self::ordered_captures(board, Some(&targets_bitboard));
-        let remaining_movegen =
-            Self::movegen_from_mask(board, !other_players_pieces & !targets_bitboard);
-        // Collected list
-        favored.extend(top_targets.ordered_moves());
-        Self {
-            favored,
-            remaining_movegen,
-            board: *board,
-            stage: MoveOrderStage::Favored,
+fn move_score(
+    a: &ChessMove,
+    board: &Board,
+    other_players_pieces: &BitBoard,
+    cache_moves_opt: &Option<Vec<ChessMove>>,
+) -> MoveCategory {
+    // Moves in the cache get top priority
+    if let Some(cache_moves) = cache_moves_opt {
+        if let Some(pos) = cache_moves.iter().position(|x| x == a) {
+            return MoveCategory::Cached(pos.try_into().unwrap());
         }
     }
-
-    pub fn new(board: &Board) -> Self {
-        // Construct a MoveOrder in the `Captures` stage.
-        let other_players_pieces = board.color_combined(!board.side_to_move());
-        let favored = Self::ordered_captures(board, None);
-        let remaining_movegen = Self::movegen_from_mask(board, !other_players_pieces);
-        Self {
-            favored,
-            remaining_movegen,
-            board: *board,
-            stage: MoveOrderStage::Favored,
-        }
+    // Promotions are next in line
+    if let Some(promotion_piece) = a.get_promotion() {
+        return MoveCategory::Promotion(piece_value(Some(promotion_piece)));
     }
+    // Captures are ranked after MVV-LVA
+    if other_players_pieces & BitBoard::from_square(a.get_dest()) != BitBoard::new(0) {
+        return MoveCategory::Capture(mvv_lva(board, a));
+    }
+    // Non-captures, non-promotions are then considered equally boring
+    MoveCategory::NormalMove(0)
 }
 
-impl ExactSizeIterator for MoveOrder {
-    /// Give the exact length of this iterator
-    fn len(&self) -> usize {
-        self.favored.len() + self.remaining_movegen.len()
-    }
+pub fn generate_move_order(board: &Board, top_targets: Option<TopTargets>) -> Vec<ChessMove> {
+    let mut moves: Vec<ChessMove> = MoveGen::new_legal(board).collect();
+    let other_players_pieces = board.color_combined(!board.side_to_move());
+    let cache_moves_opt = top_targets.map(|t| t.ordered_moves());
+    // Now we sort in descending order, putting the good stuff first
+    moves.sort_by_key(|a| {
+        std::cmp::Reverse(move_score(a, board, other_players_pieces, &cache_moves_opt))
+    });
+    moves
 }
 
-impl Iterator for MoveOrder {
-    type Item = ChessMove;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.stage {
-            MoveOrderStage::Favored => {
-                if let Some(next) = self.favored.pop() {
-                    // In the Favored phase, we take from a pregenerated vector of potentially good moves.
-                    Some(next)
-                } else {
-                    // When empty, move on the the Remaining phase
-                    self.stage = MoveOrderStage::Remaining;
-                    self.next()
-                }
-            }
-            MoveOrderStage::Remaining => self.remaining_movegen.next(),
-        }
+pub fn moves_toward_quiescence(board: &Board) -> Vec<ChessMove> {
+    if *board.checkers() != EMPTY {
+        // We are in check. In this case we consider all possible moves
+        return MoveGen::new_legal(board).collect_vec();
     }
+    // Otherwise, we return all captures
+    let mut movegen = MoveGen::new_legal(board);
+    let other_players_pieces = board.color_combined(!board.side_to_move());
+    movegen.set_iterator_mask(*other_players_pieces);
+    let mut moves: Vec<ChessMove> = movegen.collect_vec();
+    // Sort in descending order, putting the good stuff first
+    moves.sort_by_key(|a| std::cmp::Reverse(mvv_lva(board, a)));
+    moves
 }
