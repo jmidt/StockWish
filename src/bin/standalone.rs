@@ -17,6 +17,7 @@ use egui::Rounding;
 use egui::Sense;
 use egui::Shape;
 use egui::Vec2;
+use std::str::FromStr;
 use std::thread;
 // Thread communication
 use std::sync::mpsc::{channel, Receiver};
@@ -29,7 +30,11 @@ fn main() -> Result<(), eframe::Error> {
         initial_window_size: Some(egui::vec2(800.0, 800.0)),
         ..Default::default()
     };
-    eframe::run_native("StockWish", options, Box::new(|_cc| Box::<MyApp>::default()))
+    eframe::run_native(
+        "StockWish",
+        options,
+        Box::new(|_cc| Box::<MyApp>::default()),
+    )
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -149,6 +154,8 @@ macro_rules! svg_image_piece {
 impl Default for MyApp {
     fn default() -> Self {
         Self {
+            // game: Game::from_str("r1bqkb1r/pppppppp/2n2n2/8/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq 4 2")
+            //     .expect("Could not parse FEN string"),
             game: Game::new(),
             board_image: svg_image_board!("chessboard"),
             king_black: svg_image_piece!("king_black"),

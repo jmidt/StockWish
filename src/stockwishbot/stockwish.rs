@@ -1,9 +1,6 @@
-use std::ptr::null;
-
 use chess::Board;
 use chess::ChessMove;
 use chess::Game;
-use chess::MoveGen;
 
 use super::cache::CacheData;
 use super::cache::SWCache;
@@ -54,7 +51,7 @@ impl StockWish {
         let mut best_move = None;
         println!("--------------------");
         for d in iterative_deepening_depths {
-            best_move = self.best_next_move_at_depth(game.clone(), d);
+            best_move = self.root_search(game.clone(), d);
             println!(
                 "Depth: {} ::: Best move is from {} to {}",
                 d,
@@ -76,26 +73,48 @@ impl StockWish {
         best_move
     }
 
-    fn best_next_move_at_depth(&mut self, game: Game, depth: i32) -> Option<ChessMove> {
-        let board = game.current_position();
-        let moves = MoveGen::new_legal(&board);
+    fn root_search(&mut self, game: Game, depth: i32) -> Option<ChessMove> {
+        // A special alpha-beta search function for the root node
         let mut stats = Statistics::new();
-
-        let mut algorithm = |m: ChessMove| {
-            -negamax_alpha_beta_cache(
-                &board.make_move_new(m),
+        let board = game.current_position();
+        let mut alpha = i32::MIN + 1;
+        let beta = i32::MAX;
+        // Check cache and use for move-ordering
+        let mut preferred_targets: Option<TopTargets> = None;
+        if let Some(cached_evaluation) = self.cache.get(&board.get_hash()) {
+            preferred_targets = Some(cached_evaluation.targets.clone());
+        }
+        // Prepare new cache entry
+        let mut top_targets = TopTargets::new(3);
+        // Time to search
+        let mut best_move: Option<ChessMove> = None;
+        for chess_move in generate_move_order(&board, preferred_targets) {
+            let child_score: Score = -negamax_alpha_beta_cache(
+                &board.make_move_new(chess_move),
                 &mut stats,
                 depth,
                 &mut self.cache,
-                i32::MIN,
-                i32::MAX,
+                -beta,
+                -alpha,
                 self.calibration,
-            )
-        };
-        // Get the move that leads to the worst scoring child board for the opponent.
-        let best_move = moves
-            .into_iter()
-            .max_by_key(|&m| -> i32 { algorithm(m).into() });
+            );
+            let child_score_discounted = discount_checkmates(child_score.into());
+            // Save if this is a good move
+            top_targets.try_insert(child_score_discounted, &chess_move);
+            // Check if this is the best move so far
+            if child_score_discounted > alpha {
+                alpha = child_score_discounted;
+                best_move = Some(chess_move);
+            }
+        }
+        self.cache.insert(
+            board.get_hash(),
+            CacheData {
+                depth,
+                score: Score::Exact(alpha),
+                targets: top_targets,
+            },
+        );
         stats.stop();
         best_move
     }
@@ -136,13 +155,13 @@ fn negamax_alpha_beta_cache(
     if let Some(cached_evaluation) = cache.get(&board.get_hash()) {
         if cached_evaluation.depth >= remaining_depth {
             // If this move exists in the cache at a depth of at least remaining_depth, use this.
-            // An exact score is amazing, then we use this directly. A lower bound or upper bound narrows the alpha-beta range.
+            // An exact score is amazing, then we use this directly. A lower bound or upper bound potentially narrows the alpha-beta range.
             match cached_evaluation.score {
                 Score::LowerBound(lower_bound) => {
-                    alpha = lower_bound;
+                    alpha = std::cmp::max(alpha, lower_bound);
                 }
                 Score::UpperBound(upper_bound) => {
-                    beta = upper_bound;
+                    beta = std::cmp::min(beta, upper_bound);
                 }
                 Score::Exact(exact) => return Score::Exact(exact),
             }
@@ -158,7 +177,7 @@ fn negamax_alpha_beta_cache(
     if remaining_depth <= 0 || valid_moves.is_empty() {
         stats.increment();
         // This is a leaf or terminal node, so we evaluate. We don't cache these here, since quiescent_board_score does this for us.
-        // Score::Exact(raw_board_score(board, calibration)) // TODO: Change back to quiescent search
+        //Score::Exact(raw_board_score(board, calibration)) // TODO: Change back to quiescent search
         Score::Exact(quiescent_board_score(
             board,
             cache,
@@ -169,22 +188,22 @@ fn negamax_alpha_beta_cache(
     } else {
         // Not a leaf node. We must evaluate further down.
         // First up: Null-move pruning
-        if let Some(null_moved_board) = null_move_pruning(board, remaining_depth) {
-            // We do the null-check with a fresh cache, to not pollute the main cache.
-            let mut null_move_cache = SWCache::new(1_000_000);
-            let score = -negamax_alpha_beta_cache(
-                &null_moved_board,
-                stats,
-                remaining_depth - 3,
-                &mut null_move_cache,
-                -beta,
-                -beta + 1,
-                calibration,
-            );
-            if i32::from(score) >= beta {
-                return Score::LowerBound(score.into());
-            }
-        }
+        // if let Some(null_moved_board) = null_move_pruning(board, remaining_depth) {
+        //     // We do the null-check with a fresh cache, to not pollute the main cache.
+        //     let mut null_move_cache = SWCache::new(1_000_000);
+        //     let score = -negamax_alpha_beta_cache(
+        //         &null_moved_board,
+        //         stats,
+        //         remaining_depth - 3,
+        //         &mut null_move_cache,
+        //         -beta,
+        //         -beta + 1,
+        //         calibration,
+        //     );
+        //     if i32::from(score) >= beta {
+        //         return Score::LowerBound(score.into());
+        //     }
+        // }
 
         let mut best_value: i32 = i32::MIN;
         let mut top_targets = TopTargets::new(6);

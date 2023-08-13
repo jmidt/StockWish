@@ -1,8 +1,5 @@
 // Evaluation of a board state. Usually used for leaf nodes in the game tree. Positive values are good for white,
 // negative values are good for black.
-
-use std::str::FromStr;
-
 use chess::BitBoard;
 use chess::Board;
 use chess::BoardStatus;
@@ -17,6 +14,14 @@ use super::cache::Score;
 use super::cache::TopTargets;
 use super::move_ordering::moves_toward_quiescence;
 use super::Calibration;
+
+const PIECE_VALUE_SCALE: i32 = 12;
+const POSITIONAL_SCALE: i32 = 1;
+const QUEEN_VALUE: i32 = 900;
+const ROOK_VALUE: i32 = 500;
+const BISHOP_VALUE: i32 = 330;
+const KNIGHT_VALUE: i32 = 320;
+const PAWN_VALUE: i32 = 100;
 
 pub fn quiescent_board_score(
     board: &Board,
@@ -56,17 +61,9 @@ fn quiescent_alpha_beta(
     }
     // Possibly raise alpha
     let mut alpha = std::cmp::max(_alpha, eval);
-
-    let captures = moves_toward_quiescence(board);
-    // If there are no captures, we have hit a quiescent board state and we evaluate.
-    if captures.is_empty() {
-        return Score::Exact(eval);
-    }
-    let mut best_value = alpha;
-    for capture in captures {
+    for capture in moves_toward_quiescence(board) {
         // TODO: If current eval + captured piece (+ some margin) is above alpha, quiesce further down.
         // Otherwise set best_value = max(best_value, that-thing-above^^)
-
         let child_score = -quiescent_alpha_beta(
             &board.make_move_new(capture),
             cache,
@@ -75,14 +72,13 @@ fn quiescent_alpha_beta(
             calibration,
         );
         let child_score_numeric = i32::from(child_score);
-        best_value = std::cmp::max(best_value, child_score_numeric);
-        alpha = std::cmp::max(alpha, best_value);
-        if beta <= best_value {
-            return Score::LowerBound(best_value);
+        if beta <= child_score_numeric {
+            return Score::LowerBound(child_score_numeric);
         }
+        alpha = std::cmp::max(alpha, child_score_numeric);
     }
     // If we get here, we HAD possible captures to do, and return the score for the optimal capture.
-    Score::Exact(best_value)
+    Score::Exact(alpha)
 }
 
 pub fn raw_board_score(board: &Board, calibration: Calibration) -> i32 {
@@ -98,31 +94,13 @@ pub fn raw_board_score(board: &Board, calibration: Calibration) -> i32 {
 
 fn ongoing_raw_board_score(board: &Board, calibration: Calibration) -> i32 {
     // This function must return scores from the point-of-view of the player who's turn it is.
-    let material = material_balance(board);
+    let material = sum_piece_square_tables(board);
     // let mobility = mobility_score(board);
-    let positional = singlet_positions(board);
     let turn = match board.side_to_move() {
         chess::Color::White => 1,
         chess::Color::Black => -1,
     };
-    return turn * (12 * material + 1 * positional);
-}
-
-fn material_balance(board: &Board) -> i32 {
-    let white_material: i32 = board
-        .color_combined(chess::Color::White)
-        .map(|s| board.piece_on(s))
-        .map(piece_value)
-        .sum();
-
-    let black_material: i32 = board
-        .color_combined(chess::Color::Black)
-        .map(|s| board.piece_on(s))
-        .map(piece_value)
-        .sum();
-
-    // The board evaluation is currently just the material balance.
-    white_material - black_material
+    turn * material
 }
 
 // TODO: Wait until we only search quiescent positions (no checks)
@@ -172,12 +150,22 @@ pub fn piece_value(p: Option<chess::Piece>) -> i32 {
     }
 }
 
-struct HeatMap {
+struct PieceSquareTable {
     cells: [i32; 64], // Row-major: a1, b1, c1, ...
 }
 
-impl HeatMap {
-    pub const fn new(vals: [i32; 64]) -> Self {
+impl PieceSquareTable {
+    pub const fn new(offset: i32, offset_scale: i32, scale: i32, vals: [i32; 64]) -> Self {
+        let mut cells = vals;
+        let mut i = 0;
+        while i < 64 {
+            cells[i] = offset * offset_scale + scale * cells[i];
+            i += 1;
+        }
+        Self { cells }
+    }
+
+    pub const fn new_raw(vals: [i32; 64]) -> Self {
         Self { cells: vals }
     }
 
@@ -188,43 +176,82 @@ impl HeatMap {
             .sum()
     }
 
-    pub fn mirror_copy(&self) -> Self {
-        let mut vals = Vec::new();
-        for chunk in self.cells.chunks_exact(8).rev() {
-            vals.extend_from_slice(chunk);
-        }
-        Self::new(vals.try_into().unwrap())
+    pub const fn change_color(&self) -> Self {
+        // The mirror is chunk-reversed, to account for the king and queen that change position.
+        Self::new_raw([
+            self.cells[56],
+            self.cells[57],
+            self.cells[58],
+            self.cells[59],
+            self.cells[60],
+            self.cells[61],
+            self.cells[62],
+            self.cells[63],
+            self.cells[48],
+            self.cells[49],
+            self.cells[50],
+            self.cells[51],
+            self.cells[52],
+            self.cells[53],
+            self.cells[54],
+            self.cells[55],
+            self.cells[40],
+            self.cells[41],
+            self.cells[42],
+            self.cells[43],
+            self.cells[44],
+            self.cells[45],
+            self.cells[46],
+            self.cells[47],
+            self.cells[32],
+            self.cells[33],
+            self.cells[34],
+            self.cells[35],
+            self.cells[36],
+            self.cells[37],
+            self.cells[38],
+            self.cells[39],
+            self.cells[24],
+            self.cells[25],
+            self.cells[26],
+            self.cells[27],
+            self.cells[28],
+            self.cells[29],
+            self.cells[30],
+            self.cells[31],
+            self.cells[16],
+            self.cells[17],
+            self.cells[18],
+            self.cells[19],
+            self.cells[20],
+            self.cells[21],
+            self.cells[22],
+            self.cells[23],
+            self.cells[8],
+            self.cells[9],
+            self.cells[10],
+            self.cells[11],
+            self.cells[12],
+            self.cells[13],
+            self.cells[14],
+            self.cells[15],
+            self.cells[0],
+            self.cells[57],
+            self.cells[58],
+            self.cells[59],
+            self.cells[60],
+            self.cells[61],
+            self.cells[62],
+            self.cells[57],
+        ])
     }
 }
 
-fn singlet_positions(board: &Board) -> i32 {
-    let BLACK_PAWN: HeatMap = WHITE_PAWN.mirror_copy();
-    let BLACK_KNIGHT: HeatMap = WHITE_KNIGHT.mirror_copy();
-    let BLACK_BISHOP: HeatMap = WHITE_BISHOP.mirror_copy();
-    let BLACK_ROOK: HeatMap = WHITE_ROOK.mirror_copy();
-    let BLACK_QUEEN: HeatMap = WHITE_QUEEN.mirror_copy();
-    let BLACK_KING_OPENING: HeatMap = WHITE_KING_OPENING.mirror_copy();
-    let BLACK_KING_ENDGAME: HeatMap = WHITE_KING_ENDGAME.mirror_copy();
-
-    let white_pawns = board.color_combined(chess::Color::White) & board.pieces(chess::Piece::Pawn);
-    let black_pawns = board.color_combined(chess::Color::Black) & board.pieces(chess::Piece::Pawn);
-    let white_knights =
-        board.color_combined(chess::Color::White) & board.pieces(chess::Piece::Knight);
-    let black_knights =
-        board.color_combined(chess::Color::Black) & board.pieces(chess::Piece::Knight);
-    let white_bishops =
-        board.color_combined(chess::Color::White) & board.pieces(chess::Piece::Bishop);
-    let black_bishops =
-        board.color_combined(chess::Color::Black) & board.pieces(chess::Piece::Bishop);
-    let white_rooks = board.color_combined(chess::Color::White) & board.pieces(chess::Piece::Rook);
-    let black_rooks = board.color_combined(chess::Color::Black) & board.pieces(chess::Piece::Rook);
-    let white_queens =
-        board.color_combined(chess::Color::White) & board.pieces(chess::Piece::Queen);
-    let black_queens =
-        board.color_combined(chess::Color::Black) & board.pieces(chess::Piece::Queen);
-    let white_kings = board.color_combined(chess::Color::White) & board.pieces(chess::Piece::King);
-    let black_kings = board.color_combined(chess::Color::Black) & board.pieces(chess::Piece::King);
-
+fn sum_piece_square_tables(board: &Board) -> i32 {
+    let (white_pawns, white_knights, white_bishops, white_rooks, white_queens, white_king) =
+        piece_square_tables_for_color(board, chess::Color::White);
+    let (black_pawns, black_knights, black_bishops, black_rooks, black_queens, black_king) =
+        piece_square_tables_for_color(board, chess::Color::Black);
     WHITE_PAWN.dot(&white_pawns) - BLACK_PAWN.dot(&black_pawns) + WHITE_KNIGHT.dot(&white_knights)
         - BLACK_KNIGHT.dot(&black_knights)
         + WHITE_BISHOP.dot(&white_bishops)
@@ -233,101 +260,164 @@ fn singlet_positions(board: &Board) -> i32 {
         - BLACK_ROOK.dot(&black_rooks)
         + WHITE_QUEEN.dot(&white_queens)
         - BLACK_QUEEN.dot(&black_queens)
-        + WHITE_KING_OPENING.dot(&white_kings)
-        - BLACK_KING_OPENING.dot(&black_kings)
+        + WHITE_KING_OPENING.dot(&white_king)
+        - BLACK_KING_OPENING.dot(&black_king)
+}
+
+fn piece_square_tables_for_color(
+    board: &Board,
+    color: chess::Color,
+) -> (
+    chess::BitBoard,
+    chess::BitBoard,
+    chess::BitBoard,
+    chess::BitBoard,
+    chess::BitBoard,
+    chess::BitBoard,
+) {
+    let pawns = board.color_combined(color) & board.pieces(chess::Piece::Pawn);
+    let knights = board.color_combined(color) & board.pieces(chess::Piece::Knight);
+    let bishops = board.color_combined(color) & board.pieces(chess::Piece::Bishop);
+    let rooks = board.color_combined(color) & board.pieces(chess::Piece::Rook);
+    let queens = board.color_combined(color) & board.pieces(chess::Piece::Queen);
+    let king = board.color_combined(color) & board.pieces(chess::Piece::King);
+    (pawns, knights, bishops, rooks, queens, king)
 }
 
 // Pawns
-const WHITE_PAWN: HeatMap = HeatMap::new([
-    0, 0, 0, 0, 0, 0, 0, 0, //
-    50, 50, 50, 50, 50, 50, 50, 50, //
-    10, 10, 20, 30, 30, 20, 10, 10, //
-    5, 5, 10, 25, 25, 10, 5, 5, //
-    0, 0, 0, 20, 20, 0, 0, 0, //
-    5, -5, -10, 0, 0, -10, -5, 5, //
-    5, 10, 10, -20, -20, 10, 10, 5, //
-    0, 0, 0, 0, 0, 0, 0, 0, //
-]);
-const WHITE_KNIGHT: HeatMap = HeatMap::new([
-    -50, -40, -30, -30, -30, -30, -40, -50, //
-    -40, -20, 0, 0, 0, 0, -20, -40, //
-    -30, 0, 10, 15, 15, 10, 0, -30, //
-    -30, 5, 15, 20, 20, 15, 5, -30, //
-    -30, 0, 15, 20, 20, 15, 0, -30, //
-    -30, 5, 10, 15, 15, 10, 5, -30, //
-    -40, -20, 0, 5, 5, 0, -20, -40, //
-    -50, -40, -30, -30, -30, -30, -40, -50, //
-]);
-const WHITE_BISHOP: HeatMap = HeatMap::new([
-    -20, -10, -10, -10, -10, -10, -10, -20, //
-    -10, 0, 0, 0, 0, 0, 0, -10, //
-    -10, 0, 5, 10, 10, 5, 0, -10, //
-    -10, 5, 5, 10, 10, 5, 5, -10, //
-    -10, 0, 10, 10, 10, 10, 0, -10, //
-    -10, 10, 10, 10, 10, 10, 10, -10, //
-    -10, 5, 0, 0, 0, 0, 5, -10, //
-    -20, -10, -10, -10, -10, -10, -10, -20, //
-]);
-const WHITE_ROOK: HeatMap = HeatMap::new([
-    0, 0, 0, 0, 0, 0, 0, 0, //
-    5, 10, 10, 10, 10, 10, 10, 5, //
-    -5, 0, 0, 0, 0, 0, 0, -5, //
-    -5, 0, 0, 0, 0, 0, 0, -5, //
-    -5, 0, 0, 0, 0, 0, 0, -5, //
-    -5, 0, 0, 0, 0, 0, 0, -5, //
-    -5, 0, 0, 0, 0, 0, 0, -5, //
-    0, 0, 0, 5, 5, 0, 0, 0, //
-]);
-const WHITE_QUEEN: HeatMap = HeatMap::new([
-    -20, -10, -10, -5, -5, -10, -10, -20, //
-    -10, 0, 0, 0, 0, 0, 0, -10, //
-    -10, 0, 5, 5, 5, 5, 0, -10, //
-    -5, 0, 5, 5, 5, 5, 0, -5, //
-    0, 0, 5, 5, 5, 5, 0, -5, //
-    -10, 5, 5, 5, 5, 5, 0, -10, //
-    -10, 0, 5, 0, 0, 0, 0, -10, //
-    -20, -10, -10, -5, -5, -10, -10, -20, //
-]);
-const WHITE_KING_OPENING: HeatMap = HeatMap::new([
-    -30, -40, -40, -50, -50, -40, -40, -30, //
-    -30, -40, -40, -50, -50, -40, -40, -30, //
-    -30, -40, -40, -50, -50, -40, -40, -30, //
-    -30, -40, -40, -50, -50, -40, -40, -30, //
-    -20, -30, -30, -40, -40, -30, -30, -20, //
-    -10, -20, -20, -20, -20, -20, -20, -10, //
-    20, 20, 0, 0, 0, 0, 20, 20, //
-    20, 30, 10, 0, 0, 10, 30, 20, //
-]);
-const WHITE_KING_ENDGAME: HeatMap = HeatMap::new([
-    -50, -40, -30, -20, -20, -30, -40, -50, //
-    -30, -20, -10, 0, 0, -10, -20, -30, //
-    -30, -10, 20, 30, 30, 20, -10, -30, //
-    -30, -10, 30, 40, 40, 30, -10, -30, //
-    -30, -10, 30, 40, 40, 30, -10, -30, //
-    -30, -10, 20, 30, 30, 20, -10, -30, //
-    -30, -30, 0, 0, 0, 0, -30, -30, //
-    -50, -30, -30, -30, -30, -30, -30, -50, //
-]);
+const WHITE_PAWN: PieceSquareTable = PieceSquareTable::new(
+    PAWN_VALUE,
+    PIECE_VALUE_SCALE,
+    POSITIONAL_SCALE,
+    [
+        0, 0, 0, 0, 0, 0, 0, 0, //
+        50, 50, 50, 50, 50, 50, 50, 50, //
+        10, 10, 20, 30, 30, 20, 10, 10, //
+        5, 5, 10, 25, 25, 10, 5, 5, //
+        0, 0, 0, 20, 20, 0, 0, 0, //
+        5, -5, -10, 0, 0, -10, -5, 5, //
+        5, 10, 10, -20, -20, 10, 10, 5, //
+        0, 0, 0, 0, 0, 0, 0, 0, //
+    ],
+);
+const WHITE_KNIGHT: PieceSquareTable = PieceSquareTable::new(
+    KNIGHT_VALUE,
+    PIECE_VALUE_SCALE,
+    POSITIONAL_SCALE,
+    [
+        -50, -40, -30, -30, -30, -30, -40, -50, //
+        -40, -20, 0, 0, 0, 0, -20, -40, //
+        -30, 0, 10, 15, 15, 10, 0, -30, //
+        -30, 5, 15, 20, 20, 15, 5, -30, //
+        -30, 0, 15, 20, 20, 15, 0, -30, //
+        -30, 5, 10, 15, 15, 10, 5, -30, //
+        -40, -20, 0, 5, 5, 0, -20, -40, //
+        -50, -40, -30, -30, -30, -30, -40, -50, //
+    ],
+);
+const WHITE_BISHOP: PieceSquareTable = PieceSquareTable::new(
+    BISHOP_VALUE,
+    PIECE_VALUE_SCALE,
+    POSITIONAL_SCALE,
+    [
+        -20, -10, -10, -10, -10, -10, -10, -20, //
+        -10, 0, 0, 0, 0, 0, 0, -10, //
+        -10, 0, 5, 10, 10, 5, 0, -10, //
+        -10, 5, 5, 10, 10, 5, 5, -10, //
+        -10, 0, 10, 10, 10, 10, 0, -10, //
+        -10, 10, 10, 10, 10, 10, 10, -10, //
+        -10, 5, 0, 0, 0, 0, 5, -10, //
+        -20, -10, -10, -10, -10, -10, -10, -20, //
+    ],
+);
+const WHITE_ROOK: PieceSquareTable = PieceSquareTable::new(
+    ROOK_VALUE,
+    PIECE_VALUE_SCALE,
+    POSITIONAL_SCALE,
+    [
+        0, 0, 0, 0, 0, 0, 0, 0, //
+        5, 10, 10, 10, 10, 10, 10, 5, //
+        -5, 0, 0, 0, 0, 0, 0, -5, //
+        -5, 0, 0, 0, 0, 0, 0, -5, //
+        -5, 0, 0, 0, 0, 0, 0, -5, //
+        -5, 0, 0, 0, 0, 0, 0, -5, //
+        -5, 0, 0, 0, 0, 0, 0, -5, //
+        0, 0, 0, 5, 5, 0, 0, 0, //
+    ],
+);
+const WHITE_QUEEN: PieceSquareTable = PieceSquareTable::new(
+    QUEEN_VALUE,
+    PIECE_VALUE_SCALE,
+    POSITIONAL_SCALE,
+    [
+        -20, -10, -10, -5, -5, -10, -10, -20, //
+        -10, 0, 0, 0, 0, 0, 0, -10, //
+        -10, 0, 5, 5, 5, 5, 0, -10, //
+        -5, 0, 5, 5, 5, 5, 0, -5, //
+        0, 0, 5, 5, 5, 5, 0, -5, //
+        -10, 5, 5, 5, 5, 5, 0, -10, //
+        -10, 0, 5, 0, 0, 0, 0, -10, //
+        -20, -10, -10, -5, -5, -10, -10, -20, //
+    ],
+);
+const WHITE_KING_OPENING: PieceSquareTable = PieceSquareTable::new(
+    0,
+    PIECE_VALUE_SCALE,
+    POSITIONAL_SCALE,
+    [
+        -30, -40, -40, -50, -50, -40, -40, -30, //
+        -30, -40, -40, -50, -50, -40, -40, -30, //
+        -30, -40, -40, -50, -50, -40, -40, -30, //
+        -30, -40, -40, -50, -50, -40, -40, -30, //
+        -20, -30, -30, -40, -40, -30, -30, -20, //
+        -10, -20, -20, -20, -20, -20, -20, -10, //
+        20, 20, 0, 0, 0, 0, 20, 20, //
+        20, 30, 10, 0, 0, 10, 30, 20, //
+    ],
+);
+const WHITE_KING_ENDGAME: PieceSquareTable = PieceSquareTable::new(
+    0,
+    PIECE_VALUE_SCALE,
+    POSITIONAL_SCALE,
+    [
+        -50, -40, -30, -20, -20, -30, -40, -50, //
+        -30, -20, -10, 0, 0, -10, -20, -30, //
+        -30, -10, 20, 30, 30, 20, -10, -30, //
+        -30, -10, 30, 40, 40, 30, -10, -30, //
+        -30, -10, 30, 40, 40, 30, -10, -30, //
+        -30, -10, 20, 30, 30, 20, -10, -30, //
+        -30, -30, 0, 0, 0, 0, -30, -30, //
+        -50, -30, -30, -30, -30, -30, -30, -50, //
+    ],
+);
 
-fn pawn_singlet_position(board: &Board, phase: GamePhase) -> f32 {
-    // TODO: Make below const
-    let BLACK_PAWN: HeatMap = WHITE_PAWN.mirror_copy();
-    let BLACK_KNIGHT: HeatMap = WHITE_KNIGHT.mirror_copy();
-    let BLACK_BISHOP: HeatMap = WHITE_BISHOP.mirror_copy();
-    let BLACK_ROOK: HeatMap = WHITE_ROOK.mirror_copy();
-    let BLACK_QUEEN: HeatMap = WHITE_QUEEN.mirror_copy();
-    let BLACK_KING_OPENING: HeatMap = WHITE_KING_OPENING.mirror_copy();
-    let BLACK_KING_ENDGAME: HeatMap = WHITE_KING_ENDGAME.mirror_copy();
-    let white_pawns = board.color_combined(chess::Color::White) & board.pieces(chess::Piece::Pawn);
-    let black_pawns = board.color_combined(chess::Color::Black) & board.pieces(chess::Piece::Pawn);
-    // match phase {
-    //     GamePhase::Opening => {
-    //         OPENING_WHITE_PAWN_HM.dot(&white_pawns) - OPENING_BLACK_PAWN_HM.dot(&black_pawns)
-    //     }
-    //     GamePhase::MiddleGame => 0.0,
-    //     GamePhase::Endgame => {
-    //         LATE_WHITE_PAWN_HM.dot(&white_pawns) - LATE_BLACK_PAWN_HM.dot(&black_pawns)
-    //     }
-    // }
-    0.0
-}
+const BLACK_PAWN: PieceSquareTable = WHITE_PAWN.change_color();
+const BLACK_KNIGHT: PieceSquareTable = WHITE_KNIGHT.change_color();
+const BLACK_BISHOP: PieceSquareTable = WHITE_BISHOP.change_color();
+const BLACK_ROOK: PieceSquareTable = WHITE_ROOK.change_color();
+const BLACK_QUEEN: PieceSquareTable = WHITE_QUEEN.change_color();
+const BLACK_KING_OPENING: PieceSquareTable = WHITE_KING_OPENING.change_color();
+const BLACK_KING_ENDGAME: PieceSquareTable = WHITE_KING_ENDGAME.change_color();
+
+// fn pawn_singlet_position(board: &Board, phase: GamePhase) -> f32 {
+//     // TODO: Make below const
+//     let BLACK_PAWN: PieceSquareTable = WHITE_PAWN.mirror_copy();
+//     let BLACK_KNIGHT: PieceSquareTable = WHITE_KNIGHT.mirror_copy();
+//     let BLACK_BISHOP: PieceSquareTable = WHITE_BISHOP.mirror_copy();
+//     let BLACK_ROOK: PieceSquareTable = WHITE_ROOK.mirror_copy();
+//     let BLACK_QUEEN: PieceSquareTable = WHITE_QUEEN.mirror_copy();
+//     let BLACK_KING_OPENING: PieceSquareTable = WHITE_KING_OPENING.mirror_copy();
+//     let BLACK_KING_ENDGAME: PieceSquareTable = WHITE_KING_ENDGAME.mirror_copy();
+//     let white_pawns = board.color_combined(chess::Color::White) & board.pieces(chess::Piece::Pawn);
+//     let black_pawns = board.color_combined(chess::Color::Black) & board.pieces(chess::Piece::Pawn);
+//     // match phase {
+//     //     GamePhase::Opening => {
+//     //         OPENING_WHITE_PAWN_HM.dot(&white_pawns) - OPENING_BLACK_PAWN_HM.dot(&black_pawns)
+//     //     }
+//     //     GamePhase::MiddleGame => 0.0,
+//     //     GamePhase::Endgame => {
+//     //         LATE_WHITE_PAWN_HM.dot(&white_pawns) - LATE_BLACK_PAWN_HM.dot(&black_pawns)
+//     //     }
+//     // }
+//     0.0
+// }

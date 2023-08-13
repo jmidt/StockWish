@@ -46,7 +46,8 @@ async fn play_game(id: String) {
     let lichess = Lichess::new(env::var("LICHESS_PAT_0").unwrap());
     let mut stream = lichess.stream_bot_game_state(&id).await.unwrap();
     let mut myself: Option<chess::Color> = None;
-    while let bs_result = stream.try_next().await {
+    loop {
+        let bs_result = stream.try_next().await;
         if let Ok(Some(board_state)) = bs_result {
             match board_state {
                 BoardState::GameFull(game_full) => {
