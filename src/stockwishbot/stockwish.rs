@@ -2,12 +2,11 @@ use chess::Board;
 use chess::ChessMove;
 use chess::Game;
 
-use super::cache::CacheData;
+use super::cache::insert_in_cache_if_better;
 use super::cache::SWCache;
 use super::cache::Score;
 use super::cache::TopTargets;
 use super::evaluation::quiescent_board_score;
-use super::evaluation::raw_board_score;
 use super::move_ordering::generate_move_order;
 use super::statistics::Statistics;
 
@@ -47,10 +46,9 @@ impl StockWish {
     // Returns the best next move using iterative deepening.
     //
     pub fn best_next_move_iterative_deepening(&mut self, game: Game) -> Option<ChessMove> {
-        let iterative_deepening_depths = vec![1, 2, 3, 4, 5, 6];
         let mut best_move = None;
         println!("--------------------");
-        for d in iterative_deepening_depths {
+        for d in 1..self.depth {
             best_move = self.root_search(game.clone(), d);
             println!(
                 "Depth: {} ::: Best move is from {} to {}",
@@ -107,13 +105,12 @@ impl StockWish {
                 best_move = Some(chess_move);
             }
         }
-        self.cache.insert(
-            board.get_hash(),
-            CacheData {
-                depth,
-                score: Score::Exact(alpha),
-                targets: top_targets,
-            },
+        insert_in_cache_if_better(
+            &board,
+            depth,
+            &Score::Exact(alpha),
+            top_targets,
+            &mut self.cache,
         );
         stats.stop();
         best_move
@@ -188,24 +185,23 @@ fn negamax_alpha_beta_cache(
     } else {
         // Not a leaf node. We must evaluate further down.
         // First up: Null-move pruning
-        // if let Some(null_moved_board) = null_move_pruning(board, remaining_depth) {
-        //     // We do the null-check with a fresh cache, to not pollute the main cache.
-        //     let mut null_move_cache = SWCache::new(1_000_000);
-        //     let score = -negamax_alpha_beta_cache(
-        //         &null_moved_board,
-        //         stats,
-        //         remaining_depth - 3,
-        //         &mut null_move_cache,
-        //         -beta,
-        //         -beta + 1,
-        //         calibration,
-        //     );
-        //     if i32::from(score) >= beta {
-        //         return Score::LowerBound(score.into());
-        //     }
-        // }
+        if let Some(null_moved_board) = null_move_pruning(board, remaining_depth) {
+            // We do the null-check with a fresh cache, to not pollute the main cache.
+            let score = -negamax_alpha_beta_cache(
+                &null_moved_board,
+                stats,
+                remaining_depth - 3,
+                cache,
+                -beta,
+                -beta + 1,
+                calibration,
+            );
+            if i32::from(score) >= beta {
+                return Score::LowerBound(score.into());
+            }
+        }
 
-        let mut best_value: i32 = i32::MIN;
+        let mut best_value: i32 = i32::MIN + 1;
         let mut top_targets = TopTargets::new(6);
         for chess_move in valid_moves {
             let child_score: Score = -negamax_alpha_beta_cache(
@@ -225,26 +221,12 @@ fn negamax_alpha_beta_cache(
             alpha = std::cmp::max(alpha, best_value);
             if best_value >= beta {
                 let score = Score::LowerBound(best_value);
-                cache.insert(
-                    board.get_hash(),
-                    CacheData {
-                        depth: remaining_depth,
-                        score,
-                        targets: top_targets,
-                    },
-                );
+                insert_in_cache_if_better(board, remaining_depth, &score, top_targets, cache);
                 return score;
             }
         }
         let score = Score::Exact(best_value);
-        cache.insert(
-            board.get_hash(),
-            CacheData {
-                depth: remaining_depth,
-                score,
-                targets: top_targets,
-            },
-        );
+        insert_in_cache_if_better(board, remaining_depth, &score, top_targets, cache);
         score
     }
 }

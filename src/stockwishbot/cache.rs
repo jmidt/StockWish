@@ -1,4 +1,4 @@
-use chess::{BitBoard, ChessMove, Color};
+use chess::{Board, ChessMove};
 use hashlru::Cache;
 use itertools::Itertools;
 use std::ops::Neg;
@@ -42,6 +42,37 @@ pub struct CacheData {
 
 pub type SWCache = Cache<u64, CacheData>;
 
+pub fn insert_in_cache_if_better(
+    board: &Board,
+    depth: i32,
+    score: &Score,
+    targets: TopTargets,
+    cache: &mut SWCache,
+) {
+    let hash = board.get_hash();
+    if let Some(cached) = cache.get(&hash) {
+        if depth > cached.depth {
+            cache.insert(
+                board.get_hash(),
+                CacheData {
+                    depth,
+                    score: *score,
+                    targets,
+                },
+            );
+        }
+    } else {
+        cache.insert(
+            board.get_hash(),
+            CacheData {
+                depth,
+                score: *score,
+                targets,
+            },
+        );
+    }
+}
+
 // A collection which will retain only the N best moves, and provide a bitboard for use in move-ordering.
 #[derive(Clone)]
 pub struct TopTargets {
@@ -77,15 +108,5 @@ impl TopTargets {
             .sorted_by(|a, b| a.0.cmp(&b.0))
             .map(|x| x.1)
             .collect_vec()
-    }
-
-    // Get a bitboard describing the target squares in the array.
-    pub fn targets(&self) -> BitBoard {
-        self.moves
-            .iter()
-            .map(|x| x.1)
-            .fold(BitBoard::new(0), |acc, elem| {
-                acc | BitBoard::from_square(elem.get_dest())
-            })
     }
 }

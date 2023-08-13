@@ -3,12 +3,9 @@
 use chess::BitBoard;
 use chess::Board;
 use chess::BoardStatus;
-use chess::Game;
-use chess::MoveGen;
-use chess::Square;
 use chess::ALL_SQUARES;
 
-use super::cache::CacheData;
+use super::cache::insert_in_cache_if_better;
 use super::cache::SWCache;
 use super::cache::Score;
 use super::cache::TopTargets;
@@ -33,27 +30,15 @@ pub fn quiescent_board_score(
     // Evaluate a board. We only actually evaluate quiescent board states, so we run through
     // a new game tree, with no max depth, only considering captures.
     // TODO: Currently using alpha-beta pruning, but I hear delta-pruning is good at this?
-    let score = quiescent_alpha_beta(board, cache, alpha, beta, calibration);
+    let score = quiescent_alpha_beta(board, alpha, beta, calibration);
     // TODO: We could potentially find some good targets, but it would only involve captures,
     // so probably not so useful for general tree search.
-    cache.insert(
-        board.get_hash(),
-        CacheData {
-            depth: 0,
-            score,
-            targets: TopTargets::new(0),
-        },
-    );
+    insert_in_cache_if_better(board, 0, &score, TopTargets::new(0), cache);
     score.into()
 }
 
-fn quiescent_alpha_beta(
-    board: &Board,
-    cache: &mut SWCache,
-    _alpha: i32,
-    beta: i32,
-    calibration: Calibration,
-) -> Score {
+// NOTE: Currently not using a cache. I think this is best, but tests should be done.
+fn quiescent_alpha_beta(board: &Board, _alpha: i32, beta: i32, calibration: Calibration) -> Score {
     // Check if current raw_board_score is enough to cause a beta-cutoff
     let eval = raw_board_score(board, calibration);
     if beta <= eval {
@@ -64,13 +49,8 @@ fn quiescent_alpha_beta(
     for capture in moves_toward_quiescence(board) {
         // TODO: If current eval + captured piece (+ some margin) is above alpha, quiesce further down.
         // Otherwise set best_value = max(best_value, that-thing-above^^)
-        let child_score = -quiescent_alpha_beta(
-            &board.make_move_new(capture),
-            cache,
-            -beta,
-            -alpha,
-            calibration,
-        );
+        let child_score =
+            -quiescent_alpha_beta(&board.make_move_new(capture), -beta, -alpha, calibration);
         let child_score_numeric = i32::from(child_score);
         if beta <= child_score_numeric {
             return Score::LowerBound(child_score_numeric);
@@ -85,7 +65,7 @@ pub fn raw_board_score(board: &Board, calibration: Calibration) -> i32 {
     // This function must return scores from the point-of-view of the player who's turn it is.
     match board.status() {
         // If it is currently a checkmate, it is a very bad thing for the current player
-        BoardStatus::Checkmate => i32::MIN,
+        BoardStatus::Checkmate => i32::MIN + 1,
         // A stalemate is evenly meh.
         BoardStatus::Stalemate => 0,
         _ => ongoing_raw_board_score(board, calibration),
